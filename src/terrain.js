@@ -8,34 +8,25 @@
 // heightfield came from.
 //
 // Cameron confirmed (2026-08-24): no drone flight exists yet for K2, so
-// Mapbox imagery/terrain is the intended DEFAULT fallback rather than a
-// one-off placeholder — specifically Mapbox's public Terrain-RGB DEM
-// tileset (real, if coarse, global elevation data) draped with Mapbox
-// satellite imagery, via the same Mapbox account/token already used for
-// the CSBP 2D viewer (see brief). NOT WIRED UP YET: doing so needs
-// Cameron's Mapbox access token, which isn't something to guess or
-// reuse from another repo without being handed it explicitly. Until
-// then this returns a flat reference plane (deliberately NOT a fake
-// undulating surface — now that real IFC/services data is loaded
-// alongside it, a synthetic bumpy surface risks being mistaken for real
-// ground shape, which a flat "no data" plane doesn't).
-//
-// TODO(swap point, needs Mapbox token): fetch Terrain-RGB tiles
-// (api.mapbox.com/v4/mapbox.terrain-rgb/{z}/{x}/{y}.pngraw) covering the
-// site extent, decode elevation per the Mapbox RGB encoding
-// (height = -10000 + (R*256*256 + G*256 + B) * 0.1), build a heightfield
-// mesh from it in the same mgaToScene() space as everything else, and
-// texture it with the corresponding satellite tile layer
-// (api.mapbox.com/v4/mapbox.satellite/{z}/{x}/{y}.jpg90). Swap this
-// branch out for a real drone DSM/DTM the same way once one exists.
+// Mapbox imagery/terrain is the DEFAULT fallback rather than a one-off
+// placeholder — Mapbox's public Terrain-RGB DEM tileset (real, if
+// coarse, global elevation data — see mapbox-terrain.js) draped with
+// Mapbox satellite imagery, via the same Mapbox account/token already
+// used for the CSBP 2D viewer. Wired up 2026-08-24 once Cameron supplied
+// the token. If VITE_MAPBOX_TOKEN isn't configured (see .env.local),
+// this falls back to a flat reference plane instead of failing outright
+// — deliberately NOT a fake undulating surface, since a synthetic bump
+// risks being mistaken for real ground shape once real IFC/services
+// geometry is in the same scene.
 //
 // TODO(later swap point): once the WebODM-based delivery platform (see
 // project memory) exposes a "latest terrain for site" endpoint, that
-// becomes the preferred source ahead of Mapbox Terrain-RGB — this
-// surface is meant to be periodically re-flighted and swapped, not a
-// one-off static asset.
+// becomes the preferred source ahead of Mapbox Terrain-RGB (genuine
+// drone DSM/DTM beats coarse global data) — this surface is meant to be
+// periodically re-flighted and swapped, not a one-off static asset.
 
 import * as THREE from "three";
+import { getMapboxTerrain } from "./mapbox-terrain.js";
 
 const REFERENCE_PLANE_SIZE_M = 200; // ~200m square, just for scale/orientation
 const TEST_COVER_DEPTH_M = 0.9; // Cameron, 2026-08-24: "~0.9m above the pipe" as a test default
@@ -50,19 +41,33 @@ const TEST_COVER_DEPTH_M = 0.9; // Cameron, 2026-08-24: "~0.9m above the pipe" a
  * @returns {Promise<{ mesh: THREE.Mesh, source: "placeholder"|"mapbox-terrain-rgb"|"geotiff"|"webodm", warning?: string }>}
  */
 export async function getCurrentTerrain(siteId, originMga) {
-  // No drone DSM, and no Mapbox token supplied yet — flat reference plane
-  // at the scene's own datum height. Replace this branch first, in this
-  // order: (1) Mapbox Terrain-RGB once a token is available, (2) a real
-  // drone DSM/DTM GeoTIFF once one exists. Leave the function signature
-  // stable either way.
+  const token = import.meta.env.VITE_MAPBOX_TOKEN;
+  if (token) {
+    try {
+      const { mesh, minAhd, maxAhd, zoom } = await getMapboxTerrain(originMga, token);
+      return {
+        mesh,
+        source: "mapbox-terrain-rgb",
+        warning:
+          `Mapbox Terrain-RGB (zoom ${zoom}), elevation range ${minAhd.toFixed(1)}–` +
+          `${maxAhd.toFixed(1)}m AHD. COARSE GLOBAL DATA, not a drone survey — ` +
+          "swap for a real DSM/DTM before any real excavation/clash assessment.",
+      };
+    } catch (err) {
+      console.error("[terrain] Mapbox terrain fetch failed, falling back to flat plane:", err);
+      // fall through to the flat-plane fallback below
+    }
+  }
+
   return {
     mesh: buildReferencePlane(),
     source: "placeholder",
-    warning:
-      "NO TERRAIN DATA — flat reference plane at site datum only. " +
-      "No drone flight yet; Mapbox Terrain-RGB fallback not wired up " +
-      "(needs a Mapbox access token). Do not use for any real " +
-      "excavation/clash assessment.",
+    warning: token
+      ? "NO TERRAIN DATA — Mapbox fetch failed (see console), flat reference " +
+        "plane at site datum only."
+      : "NO TERRAIN DATA — flat reference plane at site datum only. " +
+        "No drone flight yet; VITE_MAPBOX_TOKEN not configured (see .env.local). " +
+        "Do not use for any real excavation/clash assessment.",
   };
 }
 

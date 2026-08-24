@@ -11,12 +11,11 @@ and data. That repo is referenced only for UI/workflow patterns (layer
 control structure, KML upload flow).
 
 Status: **Phase A working end-to-end against real K2 data** (GT11
-foundation IFC, loads + georeferences correctly — verified, see below).
-Early **Phase B** started opportunistically: a real 12d services export
-parses and renders as 3D pipe geometry with justify-corrected depth.
-Terrain is still a flat reference plane (no drone flight exists yet for
-K2 — see "Terrain" below). See "Open items" at the bottom for what's
-still needed.
+foundation IFC loads + georeferences correctly, real Mapbox terrain
+loads — both verified, see below). Early **Phase B** started
+opportunistically: a real 12d services export parses and renders as 3D
+pipe geometry with justify-corrected depth, plus a test surface offset
+above it. See "Open items" at the bottom for what's still needed.
 
 ## Quick start
 
@@ -25,12 +24,19 @@ npm install
 npm run dev
 ```
 
+Requires a `.env.local` with `VITE_MAPBOX_TOKEN=pk.…` (Cameron's Mapbox
+public token, supplied 2026-08-24 — gitignored, ask him if you don't
+have it) for terrain to load; without it the app still runs, just with a
+flat placeholder plane instead of real elevation.
+
 Opens a Three.js scene with:
-- a flat reference plane (no real terrain yet — see below),
+- terrain — real Mapbox Terrain-RGB elevation + satellite imagery by
+  default (see "Terrain" below), or a flat reference plane if no token,
 - an `.ifc` file picker — loads and georeferences a design against
   GDA2020/MGA50 if the file has an `IFCMAPCONVERSION` entity,
 - a `.12da`/`.12daz` file picker — loads a 12d Model services export as
-  3D pipe/conduit geometry with real surveyed depth.
+  3D pipe/conduit geometry with real surveyed depth, and (TEST ONLY, see
+  "Terrain") swaps the terrain for a flat plane a fixed height above it.
 
 Real K2 sample files (gitignored, not in this repo — see "Data" below)
 live in `data-private/ifc/` and `data-private/12d/`.
@@ -179,30 +185,66 @@ assumed:
   extending the 12d parser further. Worth keeping in mind before
   over-investing in 12d parser generality.
 
-### Terrain (`src/terrain.js`) — no real source yet, Mapbox planned as default
+### Terrain (`src/terrain.js`, `src/mapbox-terrain.js`) — Mapbox live, real drone DSM still pending
 
 Cameron confirmed (2026-08-24): **no drone flight exists yet for K2**,
-so Mapbox imagery is meant to be the default fallback, not a one-off
-placeholder. Concretely, the plan is Mapbox's public Terrain-RGB DEM
-tileset (real, if coarse, global elevation) draped with Mapbox satellite
-imagery, via the same Mapbox account/token already used for the CSBP
-viewer. **Not wired up yet** — needs Cameron's actual Mapbox token
-handed over explicitly (not something to guess or borrow from another
-repo). Until then, `getCurrentTerrain()` returns a flat wireframe
-reference plane at the site's own AHD datum height — deliberately not a
-fake bumpy surface, since with real IFC/services geometry now in the
-same scene, a synthetic undulation risks being mistaken for real ground
-shape. The function signature/swap-point design is unchanged from the
-original plan: Mapbox Terrain-RGB → (later) a real drone DSM/DTM → 
+so Mapbox imagery is the default fallback, not a one-off placeholder —
+and supplied his Mapbox public token the same day, so this is now wired
+up and working, not just planned.
+
+**Implementation** (`mapbox-terrain.js`): fetches Mapbox Terrain-RGB (DEM)
+and Satellite tiles covering a 200m square around the scene origin,
+decodes elevation per pixel (`height = -10000 + (R·65536 + G·256 + B) × 0.1`),
+builds a heightfield mesh from it, and textures it with the stitched
+satellite imagery. API details (tile URL template, `.pngraw` format for
+undistorted elevation data, `mapbox.satellite`/`mapbox.terrain-rgb`
+tileset ids) were checked against Mapbox's own docs before writing this,
+not guessed. **One correction to the original plan**: Terrain-RGB's real
+data only goes to zoom 15 ("data up to zoom 15... higher zoom levels
+will not increase data resolution" — Mapbox's own docs), not 16 as
+originally assumed; zoom is fixed at 15 rather than exposed as a
+misleading "quality" knob.
+
+**Verified working**, not just assumed: ran it against the real GT11
+site coordinates and got a plausible elevation range (**3.2–16.4m AHD**
+over the 200m test extent) — sane for coastal industrial Kwinana and
+consistent with GT11's own RL 5.55 AHD datum. No pixel-level check has
+been done on the satellite image alignment (UV mapping follows the same
+per-vertex lon/lat → mercator-pixel calculation as the elevation
+sampling, so it should be correct, but hasn't been eyeballed) — the
+elevation values are the part that actually matters for excavation-cut
+work later, and those are the part that's been checked.
+
+`getCurrentTerrain()` tries Mapbox first if `VITE_MAPBOX_TOKEN` is set
+(`.env.local`, gitignored — Mapbox `pk.*` tokens are public/client-
+embeddable by design, not secret keys, but kept out of git history
+anyway so it's easy to rotate). Falls back to a flat wireframe reference
+plane at the site's own AHD datum height if the token is missing or the
+fetch fails — deliberately not a fake bumpy surface, since a synthetic
+undulation next to real IFC/services geometry risks being mistaken for
+real ground shape.
+
+**Reminder this is still coarse global data, not survey-grade**: every
+status message and the mesh's own `userData.source` say so. Swap point
+design is unchanged: Mapbox Terrain-RGB → (later) a real drone DSM/DTM →
 (eventually) the WebODM-based delivery platform, each swapped in without
 the rest of the scene changing.
+
+**Test surface override**: per Cameron's request (2026-08-24), loading a
+12d services file replaces whatever terrain is showing (Mapbox or
+placeholder) with a flat plane ~0.9m above the average top-of-pipe
+elevation (`terrain.js buildTestSurfaceAbovePipes()`) — a deliberately
+crude stand-in "cover depth" surface for testing the future excavation-
+cut view, not a real terrain source. Verified: real sample pipes average
+~6.29m AHD → test surface built at RL 7.19 AHD.
 
 ## Suggested Build Phases (from project brief)
 
 - **Phase A — Foundations**: ✅ Three.js scene up; ✅ real IFC file loads,
   renders, and georeferences correctly against MGA50 (verified via
-  bounding-box check); ❌ real DEM (blocked on drone flight — Mapbox
-  Terrain-RGB fallback planned but needs a token).
+  bounding-box check); ✅ real (if coarse) terrain via Mapbox Terrain-RGB,
+  verified against plausible site elevation; ❌ real drone DSM (blocked
+  on a K2 flight happening — Mapbox is the interim default).
 - **Phase B — Services in 3D**: ✅ real 12d pipe export parses and
   extrudes into 3D geometry with justify-corrected surveyed depth; ❌
   flat/assumed-depth fallback path for non-12d sources not implemented;
@@ -235,19 +277,22 @@ the rest of the scene changing.
 1. **Repo destination** — currently local-only at
    `C:\Users\camer\K2-Power-Station-3D`, not pushed anywhere, per
    Cameron's instruction to push everything at once later.
-2. **Mapbox access token** — needed to wire up the Terrain-RGB +
-   satellite default terrain fallback (see "Terrain" above).
-3. **A real drone DSM/DTM**, whenever a K2 flight happens — will replace
+2. **A real drone DSM/DTM**, whenever a K2 flight happens — will replace
    the Mapbox Terrain-RGB fallback per the swap-point design.
-4. **Cross-check on the 12d `justify top` depth correction** — no known
+3. **Cross-check on the 12d `justify top` depth correction** — no known
    invert level was available to validate the ± diameter/2 offset
    against; worth a sanity check against a drawing or as-built if one's
    handy, before trusting absolute depths beyond this POC.
-5. **A richer 12d pipe-network export** (with node/pit structure, IL,
+4. **A richer 12d pipe-network export** (with node/pit structure, IL,
    grade), if/when convenient — to test the parser against something
    less simple than the one two-string LV cable sample. Not urgent per
    Cameron's stated fallback (convert to trimesh → IFC if 12d parsing
    gets too involved).
-6. Whether the existing K2 drawing-review work (IFC-status setout
+5. Whether the existing K2 drawing-review work (IFC-status setout
    coordinate drawings, mentioned in the brief) has anything else
    reusable here.
+6. **The 0.9m test cover-depth surface is explicitly a placeholder** —
+   worth confirming with Cameron whether that's a reasonable assumption
+   to keep using for further testing, or whether he'd rather it use a
+   different default (or per-service-type default) once more services
+   are loaded.
