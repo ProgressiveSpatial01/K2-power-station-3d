@@ -14,15 +14,19 @@
         max-width: 340px;
       }
       #hud b { color: #ffb454; }
-      #file-input { margin-top: 6px; display: block; }
+      #hud label { display: block; margin-top: 8px; font-size: 11px; color: #bbb; }
+      #hud input[type="file"] { margin-top: 2px; display: block; }
     </style>
   </head>
   <body>
     <div id="app">
       <div id="hud">
-        <div><b>K2 3D POC</b> — Phase A scaffold</div>
-        <div id="status">Loading placeholder terrain…</div>
-        <input id="file-input" type="file" accept=".ifc" />
+        <div><b>K2 3D POC</b> — Phase A/B scaffold</div>
+        <div id="status">Loading terrain…</div>
+        <label for="ifc-input">IFC design (.ifc)</label>
+        <input id="ifc-input" type="file" accept=".ifc" />
+        <label for="services-input">12d services (.12da / .12daz)</label>
+        <input id="services-input" type="file" accept=".12da,.12daz" />
       </div>
     </div>
     <script type="module" src="/src/main.js"></script>

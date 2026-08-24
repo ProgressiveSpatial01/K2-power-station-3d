@@ -63,3 +63,43 @@ export function roundTripCheck(mgaPoint, toleranceM = 0.001) {
   const errM = Math.hypot(dx, dy);
   return { ok: errM <= toleranceM, errM, wgs, back };
 }
+
+// --- Scene (Three.js) local-metres convention ---------------------------
+//
+// The 3D scene is Y-up (Three.js default). Every module that places
+// geometry in the scene (terrain.js, ifc.js, services.js) must go
+// through mgaToScene()/sceneToMga() below so there is exactly ONE
+// definition of how MGA50/AHD maps to scene XYZ.
+//
+// Convention chosen deliberately to match the axis swap that IFC-in-
+// Three.js loaders conventionally apply when converting IFC's Z-up
+// authoring convention into Three.js's Y-up (verified assumption — see
+// the bounding-box sanity check logged in main.js after an IFC load):
+//   scene X = Easting  offset from origin   (local metres, +X = east)
+//   scene Y = AHD      offset from origin   (local metres, +Y = up)
+//   scene Z = -Northing offset from origin  (local metres, +Z = south)
+//
+// originMga is [easting, northing, ahd] and becomes scene (0,0,0).
+
+/**
+ * @param {[number, number, number]} mgaPoint - [easting, northing, AHD]
+ * @param {[number, number, number]} originMga - scene origin [easting, northing, AHD]
+ * @returns {[number, number, number]} [x, y, z] in scene metres
+ */
+export function mgaToScene([easting, northing, ahd], originMga) {
+  return [
+    easting - originMga[0],
+    ahd - originMga[2],
+    -(northing - originMga[1]),
+  ];
+}
+
+/**
+ * Inverse of mgaToScene().
+ * @param {[number, number, number]} xyz - scene metres
+ * @param {[number, number, number]} originMga - scene origin [easting, northing, AHD]
+ * @returns {[number, number, number]} [easting, northing, AHD]
+ */
+export function sceneToMga([x, y, z], originMga) {
+  return [x + originMga[0], -z + originMga[1], y + originMga[2]];
+}
