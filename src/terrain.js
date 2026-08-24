@@ -38,6 +38,7 @@
 import * as THREE from "three";
 
 const REFERENCE_PLANE_SIZE_M = 200; // ~200m square, just for scale/orientation
+const TEST_COVER_DEPTH_M = 0.9; // Cameron, 2026-08-24: "~0.9m above the pipe" as a test default
 
 /**
  * Get the current terrain surface for a site as a Three.js mesh, in local
@@ -81,5 +82,70 @@ function buildReferencePlane() {
 
   const mesh = new THREE.Mesh(geometry, material);
   mesh.name = "terrain-reference-plane";
+  return mesh;
+}
+
+/**
+ * TEST-ONLY stand-in surface: flat plane at a fixed assumed cover depth
+ * above the top of a set of loaded 12d service strings (see
+ * twelve-d.js). Requested by Cameron (2026-08-24) purely to have
+ * *something* plausible sitting above the pipe to test the future
+ * "peel away the surface to reveal the service" excavation-cut view
+ * against — this is NOT a real ground surface, has no relationship to
+ * actual K2 topography, and must not be used for anything beyond that.
+ *
+ * Depth reference: uses each service record's raw `points` (i.e. the
+ * un-justify-corrected data_3d values) rather than `centrelinePoints`,
+ * because for `justify: "top"` data (the only case seen so far — see
+ * README) the raw points ARE already the top-of-pipe elevation, which
+ * is what "cover depth above the pipe" should be measured from. If a
+ * future service uses a different justify, this still reads the top-
+ * of-pipe surface correctly since parse12da() only adjusts
+ * centrelinePoints, never the raw points.
+ *
+ * @param {ReturnType<typeof import("./twelve-d.js").parse12da>} serviceRecords
+ * @param {[number, number, number]} originMga
+ * @param {number} coverDepthM - default 0.9m, per Cameron's test request
+ * @returns {THREE.Mesh}
+ */
+export function buildTestSurfaceAbovePipes(
+  serviceRecords,
+  originMga,
+  coverDepthM = TEST_COVER_DEPTH_M
+) {
+  const topOfPipeElevations = serviceRecords.flatMap((r) =>
+    r.points.map(([, , z]) => z)
+  );
+  if (topOfPipeElevations.length === 0) {
+    throw new Error(
+      "buildTestSurfaceAbovePipes(): no service points to derive a surface from."
+    );
+  }
+  const avgTopOfPipeAhd =
+    topOfPipeElevations.reduce((a, b) => a + b, 0) / topOfPipeElevations.length;
+  const surfaceAhd = avgTopOfPipeAhd + coverDepthM;
+
+  const geometry = new THREE.PlaneGeometry(
+    REFERENCE_PLANE_SIZE_M,
+    REFERENCE_PLANE_SIZE_M
+  );
+  geometry.rotateX(-Math.PI / 2);
+  // scene Y = AHD offset from origin, per crs.js's mgaToScene() convention.
+  const sceneY = surfaceAhd - originMga[2];
+  geometry.translate(0, sceneY, 0);
+
+  const material = new THREE.MeshStandardMaterial({
+    color: 0x776633,
+    wireframe: true,
+  });
+
+  const mesh = new THREE.Mesh(geometry, material);
+  mesh.name = "terrain-test-surface-above-pipes";
+  mesh.userData = {
+    source: "test-offset-above-pipes",
+    coverDepthM,
+    avgTopOfPipeAhd,
+    surfaceAhd,
+  };
   return mesh;
 }

@@ -7,7 +7,7 @@
 
 import * as OBC from "@thatopen/components";
 import * as THREE from "three";
-import { getCurrentTerrain } from "./terrain.js";
+import { getCurrentTerrain, buildTestSurfaceAbovePipes } from "./terrain.js";
 import { setupIfcLoader, loadIfcFile, extractGeoreference, computeIfcPlacement } from "./ifc.js";
 import { loadTwelveDaFile } from "./twelve-d.js";
 import { buildServiceMeshes } from "./services.js";
@@ -57,8 +57,10 @@ async function main() {
   grid.create(world);
 
   setStatus("Loading terrain…");
-  const { mesh: terrainMesh, warning } = await getCurrentTerrain("K2", SCENE_ORIGIN_MGA);
-  world.scene.three.add(terrainMesh);
+  const terrainState = { mesh: null };
+  const { mesh: initialTerrainMesh, warning } = await getCurrentTerrain("K2", SCENE_ORIGIN_MGA);
+  terrainState.mesh = initialTerrainMesh;
+  world.scene.three.add(terrainState.mesh);
   setStatus(warning ?? "Terrain loaded.");
 
   setStatus("Setting up IFC loader…");
@@ -66,7 +68,7 @@ async function main() {
   setStatus("Ready — choose an .ifc design and/or a .12da/.12daz services file.");
 
   wireIfcInput(components, ifcLoader);
-  wireServicesInput(world);
+  wireServicesInput(world, terrainState);
 }
 
 function wireIfcInput(components, ifcLoader) {
@@ -113,7 +115,7 @@ function wireIfcInput(components, ifcLoader) {
   });
 }
 
-function wireServicesInput(world) {
+function wireServicesInput(world, terrainState) {
   const fileInput = document.getElementById("services-input");
   fileInput.addEventListener("change", async (e) => {
     const file = e.target.files?.[0];
@@ -124,9 +126,23 @@ function wireServicesInput(world) {
       console.log("[K2-3D] Parsed 12d records:", records);
       const group = buildServiceMeshes(records, SCENE_ORIGIN_MGA);
       world.scene.three.add(group);
+
+      // TEST-ONLY, per Cameron (2026-08-24): swap the terrain reference
+      // plane for one sitting ~0.9m above the loaded pipes' top-of-pipe
+      // elevation, purely as a plausible stand-in surface until real
+      // terrain exists — see terrain.js buildTestSurfaceAbovePipes().
+      world.scene.three.remove(terrainState.mesh);
+      terrainState.mesh.geometry.dispose();
+      terrainState.mesh.material.dispose();
+      terrainState.mesh = buildTestSurfaceAbovePipes(records, SCENE_ORIGIN_MGA);
+      world.scene.three.add(terrainState.mesh);
+      const { coverDepthM, surfaceAhd } = terrainState.mesh.userData;
+
       setStatus(
         `Loaded ${file.name}: ${records.length} service string(s) added ` +
-          `(surveyed depth, justify-corrected — see console for details).`
+          `(surveyed depth, justify-corrected). Terrain replaced with a TEST ` +
+          `surface ${coverDepthM}m above the pipes (RL ${surfaceAhd.toFixed(2)} AHD) — ` +
+          "not real terrain, see terrain.js."
       );
     } catch (err) {
       console.error(err);
