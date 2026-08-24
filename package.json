@@ -13,6 +13,7 @@
     "@thatopen/components": "^3.4.8",
     "@thatopen/fragments": "^3.4.7",
     "@thatopen/ui": "^3.4.10",
+    "mapbox-gl": "^3.29.0",
     "proj4": "^2.11.0",
     "three": "^0.185.1"
   },

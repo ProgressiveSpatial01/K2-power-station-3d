@@ -3,32 +3,42 @@
   <head>
     <meta charset="UTF-8" />
     <meta name="viewport" content="width=device-width, initial-scale=1.0" />
-    <title>K2 — 3D Excavation &amp; Clash POC</title>
+    <title>K2 — 2D Site Map</title>
     <style>
       html, body { margin: 0; height: 100%; background: #1a1a1a; }
-      #app { position: relative; width: 100%; height: 100%; }
+      #map { position: absolute; inset: 0; }
       #hud {
         position: absolute; top: 8px; left: 8px; z-index: 10;
         font: 12px/1.5 system-ui, sans-serif; color: #eee;
-        background: rgba(0,0,0,0.55); padding: 8px 10px; border-radius: 6px;
+        background: rgba(0,0,0,0.7); padding: 10px 12px; border-radius: 6px;
         max-width: 340px;
       }
       #hud b { color: #ffb454; }
       #hud label { display: block; margin-top: 8px; font-size: 11px; color: #bbb; }
       #hud input[type="file"] { margin-top: 2px; display: block; }
+      #layer-list { margin-top: 10px; border-top: 1px solid #444; padding-top: 8px; }
+      #layer-list label { display: flex; align-items: center; gap: 6px; font-size: 12px; color: #ddd; margin: 4px 0; }
+      #view-toggle {
+        position: absolute; top: 8px; right: 8px; z-index: 10;
+        font: 13px/1 system-ui, sans-serif; color: #fff;
+        background: #ffb454; padding: 10px 16px; border-radius: 6px;
+        text-decoration: none; font-weight: 600;
+      }
+      #view-toggle:hover { background: #ffc677; }
     </style>
   </head>
   <body>
-    <div id="app">
-      <div id="hud">
-        <div><b>K2 3D POC</b> — Phase A/B scaffold</div>
-        <div id="status">Loading terrain…</div>
-        <label for="ifc-input">IFC design (.ifc)</label>
-        <input id="ifc-input" type="file" accept=".ifc" />
-        <label for="services-input">12d services (.12da / .12daz)</label>
-        <input id="services-input" type="file" accept=".12da,.12daz" />
-      </div>
+    <div id="map"></div>
+    <a id="view-toggle" href="/3d.html">3D View →</a>
+    <div id="hud">
+      <div><b>K2 Site Map</b> — 2D overview</div>
+      <div id="status">Loading map…</div>
+      <label for="ifc-input">IFC design (.ifc)</label>
+      <input id="ifc-input" type="file" accept=".ifc" />
+      <label for="services-input">12d services (.12da / .12daz)</label>
+      <input id="services-input" type="file" accept=".12da,.12daz" />
+      <div id="layer-list"></div>
     </div>
-    <script type="module" src="/src/main.js"></script>
+    <script type="module" src="/src/main-2d.js"></script>
   </body>
 </html>

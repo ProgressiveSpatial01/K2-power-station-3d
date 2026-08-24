@@ -123,6 +123,21 @@ function waitForGeometry(object3d, { timeoutMs = 8000, pollMs = 50 } = {}) {
 }
 
 /**
+ * Does an IfcProjectedCRS name look like real GDA2020/MGA Zone 50, as
+ * opposed to some other CRS entirely or (seen in real K2 data,
+ * 2026-08-24) a project-local "Plant Grid"? A `IFCMAPCONVERSION` entity
+ * is only safe to feed straight into crs.js's MGA50 functions if this
+ * is true — see the loud caveat on extractGeoreference() below. Kept
+ * deliberately narrow (must actually say "GDA2020" and "MGA" and "50")
+ * rather than trying to guess-normalise every possible spelling.
+ */
+export function looksLikeGda2020Mga50(crsName) {
+  if (!crsName) return false;
+  const s = crsName.toLowerCase();
+  return s.includes("gda2020") && s.includes("mga") && /(?:^|\D)50(?:\D|$)/.test(s);
+}
+
+/**
  * Extract IfcMapConversion (+ IfcProjectedCRS name) from raw IFC STEP text
  * via a small targeted regex scan, rather than a full STEP parse — IFC
  * STEP files are plain ASCII/UTF-8 and these entities have a flat,
@@ -131,11 +146,26 @@ function waitForGeometry(object3d, { timeoutMs = 8000, pollMs = 50 } = {}) {
  * whitespace), prefer fixing the regex over silently falling back to an
  * un-georeferenced placement.
  *
+ * *** DO NOT ASSUME THE OFFSETS ARE REAL GDA2020/MGA50 COORDINATES ***
+ * Found in real K2 data (2026-08-24, a different/larger IFC file than
+ * the GT11 sample this module was originally validated against): an
+ * `IFCMAPCONVERSION` whose target `IfcProjectedCRS` is named
+ * **"K2 Plant Grid"**, with eastingOffset/northingOffset of (0, 0) — a
+ * project-local plant grid, not a real survey coordinate system. Every
+ * caller MUST check `isKnownMga50` (from `looksLikeGda2020Mga50()`)
+ * before feeding `eastingOffset`/`northingOffset` through crs.js's
+ * MGA50 functions or treating them as real-world coordinates — doing
+ * so for a plant-grid file would silently place the design at MGA50
+ * (0,0), nowhere near WA. If a K2 file uses a local plant grid, ask
+ * Cameron whether a known transform (offset + rotation, presumably
+ * tied to real survey control) exists from that grid to GDA2020/MGA50
+ * — don't invent one.
+ *
  * @param {Uint8Array} buffer - raw IFC file bytes
  * @returns {null | {
  *   eastingOffset: number, northingOffset: number, heightOffset: number,
  *   xAxisAbscissa: number, xAxisOrdinate: number, scale: number,
- *   crsName: string | null
+ *   crsName: string | null, isKnownMga50: boolean
  * }}
  */
 export function extractGeoreference(buffer) {
@@ -157,6 +187,15 @@ export function extractGeoreference(buffer) {
   const crsMatch = text.match(crsEntityRe);
   if (crsMatch) crsName = crsMatch[1];
 
+  const isKnownMga50 = looksLikeGda2020Mga50(crsName);
+  if (!isKnownMga50) {
+    console.warn(
+      `[ifc] IFCMAPCONVERSION target CRS is "${crsName}", not recognised as ` +
+        "GDA2020/MGA Zone 50 — its eastingOffset/northingOffset are NOT being " +
+        "treated as real-world coordinates. See extractGeoreference() in ifc.js."
+    );
+  }
+
   return {
     eastingOffset: Number(eastings),
     northingOffset: Number(northings),
@@ -165,6 +204,7 @@ export function extractGeoreference(buffer) {
     xAxisOrdinate: Number(xOrdinate),
     scale: scale !== undefined ? Number(scale) : 1,
     crsName,
+    isKnownMga50,
   };
 }
 
@@ -204,8 +244,17 @@ export function extractGeoreference(buffer) {
  * @returns {{ position: [number, number, number], rotationY: number }}
  */
 export function computeIfcPlacement(georef, sceneOriginMga) {
-  const { eastingOffset, northingOffset, heightOffset, xAxisAbscissa, xAxisOrdinate, scale } =
+  const { eastingOffset, northingOffset, heightOffset, xAxisAbscissa, xAxisOrdinate, scale, isKnownMga50, crsName } =
     georef;
+
+  if (!isKnownMga50) {
+    throw new Error(
+      `Refusing to place this model: its IfcMapConversion target CRS ("${crsName}") ` +
+        "is not recognised as GDA2020/MGA Zone 50, so its offset is not a trustworthy " +
+        "real-world coordinate (see extractGeoreference() in ifc.js). Confirm the " +
+        "correct transform with Cameron before placing this design."
+    );
+  }
 
   // Position of the model's local (0,0,0) in scene space.
   const position = mgaToScene(

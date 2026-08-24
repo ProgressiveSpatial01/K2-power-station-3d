@@ -1,0 +1,42 @@
+<!doctype html>
+<html lang="en">
+  <head>
+    <meta charset="UTF-8" />
+    <meta name="viewport" content="width=device-width, initial-scale=1.0" />
+    <title>K2 — 3D Excavation &amp; Clash POC</title>
+    <style>
+      html, body { margin: 0; height: 100%; background: #1a1a1a; }
+      #app { position: relative; width: 100%; height: 100%; }
+      #hud {
+        position: absolute; top: 8px; left: 8px; z-index: 10;
+        font: 12px/1.5 system-ui, sans-serif; color: #eee;
+        background: rgba(0,0,0,0.55); padding: 8px 10px; border-radius: 6px;
+        max-width: 340px;
+      }
+      #hud b { color: #ffb454; }
+      #hud label { display: block; margin-top: 8px; font-size: 11px; color: #bbb; }
+      #hud input[type="file"] { margin-top: 2px; display: block; }
+      #view-toggle {
+        position: absolute; top: 8px; right: 8px; z-index: 10;
+        font: 13px/1 system-ui, sans-serif; color: #fff;
+        background: #2fa3ff; padding: 10px 16px; border-radius: 6px;
+        text-decoration: none; font-weight: 600;
+      }
+      #view-toggle:hover { background: #57b6ff; }
+    </style>
+  </head>
+  <body>
+    <div id="app">
+      <a id="view-toggle" href="/index.html">← 2D Map</a>
+      <div id="hud">
+        <div><b>K2 3D POC</b> — Phase A/B scaffold. Known issue: 3D scene may render blank (see README) — being investigated.</div>
+        <div id="status">Loading terrain…</div>
+        <label for="ifc-input">IFC design (.ifc)</label>
+        <input id="ifc-input" type="file" accept=".ifc" />
+        <label for="services-input">12d services (.12da / .12daz)</label>
+        <input id="services-input" type="file" accept=".12da,.12daz" />
+      </div>
+    </div>
+    <script type="module" src="/src/main.js"></script>
+  </body>
+</html>

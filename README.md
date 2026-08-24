@@ -1,21 +1,28 @@
-# K2 — 3D Excavation & Clash Visualization POC
+# K2 — Site Platform (2D map + 3D excavation/clash POC)
 
-Proof-of-concept for Kwinana Power Plant K2: import an IFC design, reference
-a drone-derived terrain surface, and (eventually) generate a 1:1-battered
-excavation cut down to the underside of the design with underground
-services shown in 3D for clash assessment.
+Kwinana Power Plant K2 platform, aimed at Cameron's stated goal
+(2026-08-24) of a **Civil3D/Propeller-hybrid**: a drone-delivery-style 2D
+map as the primary shell (à la Propeller Aero), with a 3D view toggled in
+for the things 2D can't show — excavation cuts, clash assessment against
+underground services, design-vs-terrain review (closer to what Civil3D
+gives you for earthworks). The 3D excavation/clash tool was the original
+brief; the 2D shell was added around it once real data started surfacing
+things (like plant-grid vs survey-grid confusion, see "CRS handling"
+below) that are much easier to sanity-check on a map first.
 
 **Separate, standalone repo** — not merged with or forked from the CSBP
 underground-services repo (`CSBP-UG-Services`). Different client, site,
 and data. That repo is referenced only for UI/workflow patterns (layer
-control structure, KML upload flow).
+control structure, KML upload flow) and is the direct visual/UX
+inspiration for the 2D shell here.
 
-Status: **Phase A working end-to-end against real K2 data** (GT11
-foundation IFC loads + georeferences correctly, real Mapbox terrain
-loads — both verified, see below). Early **Phase B** started
-opportunistically: a real 12d services export parses and renders as 3D
-pipe geometry with justify-corrected depth, plus a test surface offset
-above it. See "Open items" at the bottom for what's still needed.
+Status: **2D map working end-to-end** (real IFC base point + real 12d
+services both plot correctly on real Mapbox imagery — verified). **3D
+scene has a known rendering issue** — see "Known issues" — currently
+lower priority since 2D is now the primary shell, but not forgotten.
+Underlying data/logic (CRS, IFC georeferencing, 12d parsing, Mapbox
+terrain) is shared by both views and is solid — see the phase-by-phase
+detail further down.
 
 ## Quick start
 
@@ -26,36 +33,64 @@ npm run dev
 
 Requires a `.env.local` with `VITE_MAPBOX_TOKEN=pk.…` (Cameron's Mapbox
 public token, supplied 2026-08-24 — gitignored, ask him if you don't
-have it) for terrain to load; without it the app still runs, just with a
-flat placeholder plane instead of real elevation.
+have it) — needed by both pages (the 2D base map, and the 3D scene's
+terrain).
 
-Opens a Three.js scene with:
-- terrain — real Mapbox Terrain-RGB elevation + satellite imagery by
-  default (see "Terrain" below), or a flat reference plane if no token,
-- an `.ifc` file picker — loads and georeferences a design against
-  GDA2020/MGA50 if the file has an `IFCMAPCONVERSION` entity,
-- a `.12da`/`.12daz` file picker — loads a 12d Model services export as
-  3D pipe/conduit geometry with real surveyed depth, and (TEST ONLY, see
-  "Terrain") swaps the terrain for a flat plane a fixed height above it.
+- **`index.html`** (default) — 2D Mapbox map. File pickers for `.ifc`
+  (plots the design's project base point) and `.12da`/`.12daz` (plots
+  services as real GeoJSON lines, reprojected via the same `crs.js` used
+  everywhere else). "3D View →" button in the top-right.
+- **`3d.html`** — the original Three.js excavation/clash scene: real
+  Mapbox terrain, IFC design loading + georeferencing, 12d services
+  extruded into 3D pipes, a test surface above them. "← 2D Map" link
+  back. See "Known issues" before relying on this rendering visibly.
 
 Real K2 sample files (gitignored, not in this repo — see "Data" below)
 live in `data-private/ifc/` and `data-private/12d/`.
 
+## Known issues
+
+**3D scene (`3d.html`) may render a blank/black view** — reported by
+Cameron (2026-08-24): dark page, HUD text visible, but no visible 3D
+content. Not yet root-caused. What's been ruled out: the canvas element
+itself is correctly sized and attached to the DOM; `components.init()`
+runs without error; all the data-loading logic underneath (terrain
+fetch, IFC load, georeferencing) completes successfully per console
+logs. What HASN'T been established: whether the WebGL scene is actually
+failing to draw, or whether it's drawing correctly and a diagnostic
+technique gave a false reading — a canvas pixel-sampling check (`drawImage`
+the WebGL canvas onto a 2D canvas and read pixels back) came back
+all-zero for the 3D scene, but the *same technique* also came back
+all-zero for the 2D Mapbox page in a case where the map was independently
+confirmed fully loaded and correctly centred (`map.loaded()`/
+`isStyleLoaded()` both true) — so that pixel-sampling method is not
+trustworthy for either WebGL canvas (both clear their drawing buffer
+right after compositing by default, so reading it back outside the
+paint moment often shows a false empty result). Needs either a real
+screenshot at the right moment, or a report directly from Cameron's
+browser devtools (any console errors? does `document.querySelector('#app
+canvas')` exist and have nonzero size? WebGL context lost?) to actually
+pin down. Parked while 2D is the priority, not abandoned.
+
 ## Architecture
 
-- **Three.js** — the 3D scene (terrain, IFC design, services, eventually
-  the excavation cut). Chosen over extending Mapbox GL JS's own terrain
-  support because the excavation-cut geometry (CSG/battering) and IFC
-  rendering are much more naturally a custom Three.js scene than
-  something bolted onto Mapbox's terrain pipeline. The existing 2D Mapbox
-  map (pattern borrowed from CSBP) stays as a separate "overview" view —
-  this 3D tool is deliberately its own page for now (`index.html`),
-  matching the brief's "doesn't need to be merged into the 2D map yet."
+- **Mapbox GL JS** — the 2D shell (`index.html`/`main-2d.js`), same
+  library/pattern as CSBP, fresh code for K2.
+- **Three.js** — the 3D scene (`3d.html`/`main.js`): terrain, IFC design,
+  services, eventually the excavation cut. Chosen over extending Mapbox
+  GL JS's own terrain support because the excavation-cut geometry
+  (CSG/battering) and IFC rendering are much more naturally a custom
+  Three.js scene than something bolted onto Mapbox's terrain pipeline.
 - **`@thatopen/components`** for IFC loading — see deviation note below.
-- **`proj4`** for GDA2020/MGA50 ↔ WGS84 transforms (`src/crs.js`).
+- **`proj4`** for GDA2020/MGA50 ↔ WGS84 transforms (`src/crs.js`), shared
+  by both pages.
 - **`vite`** — plain dev server/bundler, no framework. Kept intentionally
   boring (matches the "boring/mainstream dependencies only" preference
   from the wider Progressive Spatial platform work).
+- Two static pages rather than an in-page SPA toggle, for now — simpler
+  and more robust to build first; no shared *state* between them yet
+  (loading a file on one page doesn't carry over to the other) — a nice
+  follow-up once both views are solid, not core to proving this out.
 
 ### Deviation from brief: `web-ifc-three` → `@thatopen/components`
 
@@ -101,6 +136,24 @@ control point. `mgaToScene()`/`sceneToMga()` are the single canonical
 MGA50/AHD ↔ scene-local-metres conversion, used by every module that
 places geometry (terrain, IFC, services) — see the convention comment in
 `crs.js` for the axis mapping (scene X=east, Y=up, Z=south).
+
+**Not every IFC file's `IfcMapConversion` is real MGA50** — found while
+testing (2026-08-24): a different, larger K2 IFC file
+(`K2_FW_Combined_ISO_Reference_Model.ifc`) has an `IFCMAPCONVERSION`
+whose target `IfcProjectedCRS` is named **"K2 Plant Grid"**, with
+easting/northing offset `(0, 0)` — a project-local plant grid, not a
+real survey coordinate system, unlike GT11's genuine GDA2020/MGA50.
+`extractGeoreference()` (`src/ifc.js`) now checks the CRS name via
+`looksLikeGda2020Mga50()` and sets `isKnownMga50: false` when it doesn't
+recognise it; `computeIfcPlacement()` (3D) throws rather than placing
+the model, and the 2D page refuses to plot it, rather than either one
+silently treating a plant-grid offset as if it were a real MGA50
+coordinate (which would place the design at MGA50 (0,0) — nowhere near
+WA). **Needs Cameron**: does "K2 Plant Grid" have a known transform to
+GDA2020/MGA50 (a Helmert transform tied to real survey control, which is
+the usual way plant grids get related back to real coordinates)? Without
+that, any file using this CRS can't be placed on either the 2D map or in
+the 3D scene.
 
 ### IFC georeferencing — implemented and verified
 
@@ -296,3 +349,11 @@ cut view, not a real terrain source. Verified: real sample pipes average
    to keep using for further testing, or whether he'd rather it use a
    different default (or per-service-type default) once more services
    are loaded.
+7. **"K2 Plant Grid" transform to GDA2020/MGA50** — see "CRS handling"
+   above. Needed before `K2_FW_Combined_ISO_Reference_Model.ifc` (or
+   any other plant-grid-authored file) can be placed on the map or in
+   the 3D scene at all.
+8. **3D scene blank-render issue** — see "Known issues." A screenshot or
+   a devtools report from Cameron's own browser (console errors, canvas
+   presence/size, WebGL context status) would help pin this down faster
+   than further remote guessing.
