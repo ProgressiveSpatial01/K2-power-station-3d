@@ -1,0 +1,9 @@
+node_modules/
+dist/
+.env
+*.local
+
+# Real survey/design data is client-confidential — never commit it.
+# Keep real IFC/DEM/12d exports in /data-private (gitignored) and use
+# /data-sample (tracked) only for synthetic/placeholder files.
+/data-private/

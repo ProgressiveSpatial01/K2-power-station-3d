@@ -1,0 +1,22 @@
+{
+  "name": "k2-power-station-3d",
+  "version": "0.0.1",
+  "private": true,
+  "description": "Kwinana Power Plant K2 — 3D excavation & clash visualization proof of concept (Phase A: IFC + terrain in a shared Three.js scene, georeferenced to GDA2020/MGA)",
+  "type": "module",
+  "scripts": {
+    "dev": "vite",
+    "build": "vite build",
+    "preview": "vite preview"
+  },
+  "dependencies": {
+    "@thatopen/components": "^3.4.8",
+    "@thatopen/fragments": "^3.4.7",
+    "@thatopen/ui": "^3.4.10",
+    "proj4": "^2.11.0",
+    "three": "^0.185.1"
+  },
+  "devDependencies": {
+    "vite": "^5.4.0"
+  }
+}
