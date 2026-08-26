@@ -44,7 +44,9 @@ terrain).
   row per distinct 12d `style` value seen so far, e.g. `POWER_LV`).
   Unchecking a group actually hides everything in it (not just greys out
   its rows) — see `src/layer-tree.js`. "3D View →" button top-right of
-  the sidebar header.
+  the sidebar header. A floating toolbar on the map itself (top-left)
+  provides **Distance**/**Area** measurement and a **Section** (cross-
+  section/profile) tool — see "Measurement & section tools" below.
 - **`3d.html`** — the original Three.js excavation/clash scene: real
   Mapbox terrain, IFC design loading + georeferencing, 12d services
   extruded into 3D pipes, a test surface above them. "← 2D Map" link
@@ -55,45 +57,16 @@ live in `data-private/ifc/` and `data-private/12d/`.
 
 ## Known issues
 
-**3D scene (`3d.html`) may render a blank/black view** — reported by
-Cameron (2026-08-24): dark page, HUD text visible, but no visible 3D
-content. Not yet root-caused. What's been ruled out: the canvas element
-itself is correctly sized and attached to the DOM; `components.init()`
-runs without error; all the data-loading logic underneath (terrain
-fetch, IFC load, georeferencing) completes successfully per console
-logs. What HASN'T been established: whether the WebGL scene is actually
-failing to draw, or whether it's drawing correctly and a diagnostic
-technique gave a false reading — a canvas pixel-sampling check (`drawImage`
-the WebGL canvas onto a 2D canvas and read pixels back) came back
-all-zero for the 3D scene, but the *same technique* also came back
-all-zero for the 2D Mapbox page in a case where the map was independently
-confirmed fully loaded and correctly centred (`map.loaded()`/
-`isStyleLoaded()` both true) — so that pixel-sampling method is not
-trustworthy for either WebGL canvas (both clear their drawing buffer
-right after compositing by default, so reading it back outside the
-paint moment often shows a false empty result). Needs either a real
-screenshot at the right moment, or a report directly from Cameron's
-browser devtools (any console errors? does `document.querySelector('#app
-canvas')` exist and have nonzero size? WebGL context lost?) to actually
-pin down. Parked while 2D is the priority, not abandoned.
-
-**Update (2026-08-24), narrows the above considerably**: while testing
-the new sidebar, the 2D Mapbox page *also* got stuck perpetually
-"loading" in my dev/testing environment. Chased it down properly this
-time: a direct probe (`requestAnimationFrame` callbacks — got 0 in 3
-full seconds) plus Chrome's own `ERR_NETWORK_IO_SUSPENDED` network error
-both confirm the sandboxed browser tool I test in fully suspends
-rendering *and* networking whenever it isn't actually displayed on
-screen — a testing-environment limitation, not an app bug, and it
-affects anything render-loop-dependent (Mapbox's tile loading, Three.js's
-render loop). This means the earlier 3D "blank canvas" finding should be
-treated as **inconclusive**, not confirmed — it's quite plausible that
-finding was this same artifact all along, not a real defect. What's
-still solid regardless: no build/module errors, and DOM structure
-(sidebar groups/rows, HUD text) renders correctly — those don't depend
-on the render loop. **Needs a real check in your own browser** (not
-remote-diagnosable further from here) to know whether either page
-actually has a rendering problem or not.
+**3D scene (`3d.html`) is slow to load and may appear blank** —
+confirmed directly by Cameron (2026-08-24) in his own browser, not just
+in my own test environment (a separate, inconclusive finding from
+earlier the same day — my sandboxed test browser turned out to fully
+suspend rendering/networking while not displayed, which had been
+muddying this; see git history on this section for that dead end).
+**Deprioritised at Cameron's direction** — 2D is the primary shell for
+now, this can wait. Not yet root-caused; worth revisiting with real
+devtools access (console errors, canvas presence/size, WebGL context
+status) when it's back in scope, rather than more remote guessing.
 
 ## Architecture
 
@@ -114,6 +87,47 @@ actually has a rendering problem or not.
   and more robust to build first; no shared *state* between them yet
   (loading a file on one page doesn't carry over to the other) — a nice
   follow-up once both views are solid, not core to proving this out.
+- **`@mapbox/mapbox-gl-draw` + `@turf/turf`** for measurement and the
+  section tool — the same combination CSBP already uses (per the brief)
+  for its distance/area tools, reused rather than reinvented.
+
+### Measurement & section tools (`src/draw-tools.js`, `src/elevation-profile.js`, `src/profile-chart.js`)
+
+Per Cameron's request (2026-08-24), referencing Civillo's layout
+(civillo.com) as the pattern to match — read as inspiration for the
+*structure* (a floating map toolbar, a splittable profile pane), not a
+pixel clone of their branding/icon set.
+
+- **Distance / Area**: standard `mapbox-gl-draw` line/polygon drawing +
+  `turf.length()`/`turf.area()`, geodesic (WGS84) — same caveat as CSBP:
+  this is ground/great-circle distance, not MGA50 grid distance. Flag if
+  Cameron needs grid-exact numbers later.
+- **Section**: draw a line, and the view splits — a profile pane opens
+  **side-by-side** with the map (not stacked top/bottom) showing an
+  elevation-vs-distance chart along that line. **Guessed at the split
+  orientation** since "tiles the screen vertically" is genuinely
+  ambiguous in English (side-by-side columns vs. stacked rows both fit
+  that phrase) — picked side-by-side to match how Civil3D pairs a plan
+  view with a profile view, but this is a one-line CSS/layout change to
+  flip if Cameron meant the other one.
+- Elevation comes from the **same Mapbox Terrain-RGB source** as the 3D
+  scene's terrain (`src/terrain-rgb.js`, factored out of
+  `mapbox-terrain.js` so this doesn't need to pull in Three.js) — same
+  "coarse global data, not survey-grade" caveat applies.
+- **Not yet implemented**: intersecting the cut line with the loaded IFC
+  design or 12d services — the profile currently shows terrain only.
+  Natural next step once this is validated.
+- One shared `mapbox-gl-draw` instance backs both tools (`draw-tools.js`)
+  — it doesn't expect two independent instances managing the same map's
+  drawing layer, so a single "current mode" dispatches `draw.create` to
+  whichever tool is active.
+- **Bug caught before committing, not cosmetic**: the toolbar/measure-
+  result overlay elements were initially nested directly inside `#map` —
+  Mapbox's own container div, which it manages internally and explicitly
+  warns should stay empty ("the map container element should be empty,
+  otherwise the map's interactivity will be negatively impacted"). Fixed
+  with a `#map-wrapper` sibling layout; verified via DOM inspection that
+  `#map`'s only children are now Mapbox's own internal elements.
 
 ### Deviation from brief: `web-ifc-three` → `@thatopen/components`
 
