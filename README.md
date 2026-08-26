@@ -148,9 +148,12 @@ pixel clone of their branding/icon set.
   scene's terrain (`src/terrain-rgb.js`, factored out of
   `mapbox-terrain.js` so this doesn't need to pull in Three.js) — same
   "coarse global data, not survey-grade" caveat applies.
-- **Not yet implemented**: intersecting the cut line with the loaded IFC
-  design or 12d services — the profile currently shows terrain only.
-  Natural next step once this is validated.
+- **Services/design linework/design surfaces now shown on the section
+  view too** (added 2026-08-26, per Cameron: "need to be able to see
+  these layers on the section view as well") — see "Section view now
+  shows crossing layers" below. **IFC design geometry is NOT included**
+  — the 2D page only tracks an axis-aligned bounding-box footprint for
+  IFC, not its real mesh, so there's no true geometry to intersect yet.
 - One shared `mapbox-gl-draw` instance backs both tools (`draw-tools.js`)
   — it doesn't expect two independent instances managing the same map's
   drawing layer, so a single "current mode" dispatches `draw.create` to
@@ -459,6 +462,47 @@ Applied to both the 2D map and the 3D scene's `services.js` (same
 underlying bug there too) — the 3D fix hasn't been re-verified live
 given its separate known rendering issue (see "Known issues").
 
+- **Scope caveat**: this module only implements what the one sample
+  needed (name/style/colour/closed/justify/diameter/data_3d). If a real
+  K2 export has richer pipe attributes (material, node IL, grade) not
+  seen here, the generic block parser should already capture them as
+  plain key/value data — extend the mapping in `parse12da()`, not the
+  tokenizer.
+- **Fallback plan from Cameron**: if a fuller 12d pipe-network export
+  (nodes/pits, upstream-downstream structure) proves too awkward to
+  parse, he'll convert affected services to a trimesh and export as IFC
+  instead — i.e. reuse the IFC path already working above rather than
+  extending the 12d parser further. Worth keeping in mind before
+  over-investing in 12d parser generality.
+
+**Update 2026-08-26, tested against a real 800-record weekly export**
+("260826 Service Upload.12daz") — much bigger and richer than the
+original 2-record sample, and it broke the parser in three new ways,
+all fixed generically rather than special-cased (none of this data is
+actually read, it just needs to not crash on it):
+- `text "name" "value"` / `real "name" 0` / `integer "name" 5` — 3-token
+  "typed attribute" statements inside `attributes`/`group` blocks.
+- `point_data { "0013" "0014" ... }` — a flat list of quoted strings,
+  not key/value pairs.
+- `data_2d { E N }` — 2D-only points (symbol/survey pickups, no
+  elevation) alongside `data_3d`. Records with only `data_2d` have <2
+  centreline points and get filtered out before building map features
+  (would otherwise be an invalid GeoJSON LineString) — 136/800 in the
+  real file, logged rather than silently dropped.
+
+**Also found**: `model "path"` is a bare top-level statement, not a
+block — every `string` that follows belongs to whichever `model` was
+last declared, until the next one. The original generic parser's
+unordered accumulation lost this association entirely; the top-level
+loop now preserves document order and tracks it (`parse12da()`). This
+mattered more than expected: in the real file, `style` is nearly
+useless for grouping (734/800 records are just `style: "1"`), while
+`model` gives real discipline categories (Sewer, Water, Power/High
+Voltage, Power/Low Voltage, Drainage, Communications, Earthing, Gas,
+Fuel Line). **The 2D sidebar now groups services by `model`, not
+`style`.** Verified: both the small sample and the 800-record file
+parse correctly, with the model breakdown summing to exactly 800.
+
 ### Design upload broadened to linework + IFC + surfaces — `src/main-2d.js`, `src/twelve-d.js`
 
 Same message as the "rogue pits" report, Cameron added: **"the design
@@ -573,46 +617,66 @@ parsed, 8 correctly excluded as scaffold, 2 kept — real MGA50
 coordinates at the K2 site, RL 6.33-7.53m, converted to valid WGS84
 polygon rings.
 
-- **Scope caveat**: this module only implements what the one sample
-  needed (name/style/colour/closed/justify/diameter/data_3d). If a real
-  K2 export has richer pipe attributes (material, node IL, grade) not
-  seen here, the generic block parser should already capture them as
-  plain key/value data — extend the mapping in `parse12da()`, not the
-  tokenizer.
-- **Fallback plan from Cameron**: if a fuller 12d pipe-network export
-  (nodes/pits, upstream-downstream structure) proves too awkward to
-  parse, he'll convert affected services to a trimesh and export as IFC
-  instead — i.e. reuse the IFC path already working above rather than
-  extending the 12d parser further. Worth keeping in mind before
-  over-investing in 12d parser generality.
+### Section view now shows crossing layers (`src/section-intersect.js`) (2026-08-26)
 
-**Update 2026-08-26, tested against a real 800-record weekly export**
-("260826 Service Upload.12daz") — much bigger and richer than the
-original 2-record sample, and it broke the parser in three new ways,
-all fixed generically rather than special-cased (none of this data is
-actually read, it just needs to not crash on it):
-- `text "name" "value"` / `real "name" 0` / `integer "name" 5` — 3-token
-  "typed attribute" statements inside `attributes`/`group` blocks.
-- `point_data { "0013" "0014" ... }` — a flat list of quoted strings,
-  not key/value pairs.
-- `data_2d { E N }` — 2D-only points (symbol/survey pickups, no
-  elevation) alongside `data_3d`. Records with only `data_2d` have <2
-  centreline points and get filtered out before building map features
-  (would otherwise be an invalid GeoJSON LineString) — 136/800 in the
-  real file, logged rather than silently dropped.
+Per Cameron: **"need to be able to see these layers on the section view
+as well."** Previously the section/profile tool only sampled terrain —
+now it also shows where the cut line crosses Underground Services,
+Design Linework, and Design Surfaces, at their own real elevation (not
+terrain height).
 
-**Also found**: `model "path"` is a bare top-level statement, not a
-block — every `string` that follows belongs to whichever `model` was
-last declared, until the next one. The original generic parser's
-unordered accumulation lost this association entirely; the top-level
-loop now preserves document order and tracks it (`parse12da()`). This
-mattered more than expected: in the real file, `style` is nearly
-useless for grouping (734/800 records are just `style: "1"`), while
-`model` gives real discipline categories (Sewer, Water, Power/High
-Voltage, Power/Low Voltage, Drainage, Communications, Earthing, Gas,
-Fuel Line). **The 2D sidebar now groups services by `model`, not
-`style`.** Verified: both the small sample and the 800-record file
-parse correctly, with the model breakdown summing to exactly 800.
+- Each 12d-sourced feature now keeps its real elevation as a 3rd GeoJSON
+  coordinate value (`[lon, lat, elevationAhd]`) all the way from
+  `twelve-d.js`'s parsed points through to the map features — Mapbox's 2D
+  layers ignore the extra value (confirmed: no rendering change), but
+  `section-intersect.js` needs it to plot real depth/elevation instead of
+  just plan-view position.
+- **Services/design linework**: `computeSectionCrossings()` finds every
+  point where the cut line crosses a loaded line feature (2D segment-
+  segment intersection, standard "two points on each line" formula — the
+  site is small enough that treating lon/lat as a flat plane introduces
+  negligible error, the same approximation `draw-tools.js`'s geodesic
+  measurement already makes), then interpolates that feature's own real
+  Z at the exact crossing point. Rendered as a coloured dot (each
+  feature's own real, normalised 12d colour) with a hover tooltip
+  (name/model/RL) and a faint drop-line to the axis so a deeply-buried
+  crossing is still easy to spot against the terrain line.
+- **Design surfaces**: same idea, per-triangle — where the cut line
+  crosses a triangle's edges, its elevation is interpolated (linearly,
+  in 2D-plan terms) between that edge's two real vertices. Each triangle
+  crossed contributes one independent line segment ("chord"); triangles
+  become deliberately *not* explicitly stitched together — chords from
+  adjacent triangles naturally line up into what reads as one continuous
+  surface profile, since they share the exact crossing point on their
+  common edge.
+- **Deliberately excludes IFC design geometry.** The 2D page only tracks
+  an axis-aligned bounding-box footprint for IFC (see "IFC 2D footprint"
+  above), not real mesh data — there's no true geometry to intersect, and
+  faking a flat "footprint height" crossing would be exactly the kind of
+  invented-looking-like-real-data result this project's data-fidelity
+  standard rules out. Revisit if/when the 2D page keeps the real loaded
+  IFC mesh around for this rather than just a footprint.
+- Chart Y-axis range now spans the terrain line AND every crossing/chord
+  — otherwise a service several metres underground could fall outside a
+  range picked from terrain elevation alone.
+
+**Verified**: the segment-intersection math against a synthetic
+known-answer case first (Node — a line crossing dead-centre of another
+line, and a section line grazing straight through a triangle's apex
+vertex, confirming the expected duplicate-hit-at-a-vertex edge case
+rather than a wrong one), then the full real pipeline — parse real
+services + real surface files, build 3D-coordinate features, run
+`computeSectionCrossings()` against a real ~230m cut line through the
+K2 site (live in-browser, dynamic-imported modules, same workaround as
+"Design surfaces" above for the suspended render loop): 19 real service/
+linework crossings found (elevations 5.9-6.9m AHD, consistent with the
+site's known ~6.29m average), 1 real surface chord found (7.17-7.53m AHD
+over ~63m, consistent with the surface's known 6.33-7.53m range). Also
+rendered a synthetic profile through the actual `renderProfileChart()`
+into a detached DOM node to confirm the SVG/legend markup builds without
+error (2 crossing dots, 2 paths, correct legend text) — a full on-screen
+screenshot of the real chart wasn't possible this session (see "Design
+surfaces" above for why).
 
 ### Terrain (`src/terrain.js`, `src/mapbox-terrain.js`) — Mapbox live, real drone DSM still pending
 
@@ -751,3 +815,8 @@ cut view, not a real terrain source. Verified: real sample pipes average
    a devtools report from Cameron's own browser (console errors, canvas
    presence/size, WebGL context status) would help pin this down faster
    than further remote guessing.
+10. **IFC design geometry isn't included in the section view yet** — see
+    "Section view now shows crossing layers." Only worth doing if the 2D
+    page starts keeping the actual loaded IFC mesh around (it currently
+    only tracks a bounding-box footprint) — flag if this matters enough
+    to prioritise.

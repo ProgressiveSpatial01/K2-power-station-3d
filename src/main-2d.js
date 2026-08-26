@@ -37,6 +37,7 @@ import { buildModelTree } from "./model-tree.js";
 import { createDrawTools } from "./draw-tools.js";
 import { fetchElevationProfile } from "./elevation-profile.js";
 import { renderProfileChart } from "./profile-chart.js";
+import { computeSectionCrossings } from "./section-intersect.js";
 
 const statusEl = document.getElementById("status-bar");
 function setStatus(msg) {
@@ -390,6 +391,15 @@ function createLineFeatureController({ sourceId, layerId, group, popupHtml }) {
       createSourceAndLayer({ type: "FeatureCollection", features: allFeatures });
       applyFilter();
     },
+    /**
+     * Only the features currently checked "on" in the sidebar tree — used
+     * by the section/profile tool (see wireMapToolbar()'s onSectionLine)
+     * so toggling a layer off in the sidebar also removes it from the
+     * cut-line crossings, matching what's actually visible on the map.
+     */
+    getVisibleFeatures() {
+      return allFeatures.filter((f) => checkedGroups.has(f.properties.model));
+    },
   };
 }
 
@@ -401,7 +411,7 @@ const servicesController = createLineFeatureController({
     `<b>${p.name ?? "Service"}</b><br>${p.model ?? ""} (style ${p.style ?? "?"})<br>` +
     `Diameter: ${p.diameter ?? "?"} m, justify: ${p.justify ?? "?"}<br>` +
     `Colour: ${p.rawColour ?? "?"}<br>` +
-    `Depth: surveyed (12d) — see 3D view for actual elevation.`,
+    "Depth: surveyed (12d) — see the 3D view, or cut a Section across it, for actual elevation.",
 });
 
 const designLineworkController = createLineFeatureController({
@@ -421,8 +431,18 @@ const designLineworkController = createLineFeatureController({
  * (twelve-d.js splitOnGaps() — see its header for why a flat distance
  * threshold doesn't work) and filters out anything left with <2 points
  * (point/symbol data, or an isolated point after splitting).
+ *
+ * Keeps each point's real elevation as a 3rd GeoJSON coordinate value
+ * ([lon, lat, elevationAhd], added 2026-08-26) — Mapbox's 2D line layer
+ * ignores it, but section-intersect.js's cut-line crossings need it to
+ * show real pipe/linework depth rather than just terrain height. See
+ * wireMapToolbar()'s onSectionLine for where it's used.
+ *
+ * @param {string} layerKind - tags each feature for the section-view
+ *   legend/labelling (section-intersect.js) — "services" or
+ *   "design-linework", not used for anything else here.
  */
-function buildLineFeaturesFrom12d(records) {
+function buildLineFeaturesFrom12d(records, layerKind) {
   let skippedShort = 0;
   const features = records.flatMap((r) => {
     const segments = splitOnGaps(r.centrelinePoints);
@@ -436,7 +456,10 @@ function buildLineFeaturesFrom12d(records) {
         type: "Feature",
         geometry: {
           type: "LineString",
-          coordinates: seg.map(([e, n]) => mga50ToWgs84([e, n])),
+          coordinates: seg.map(([e, n, z]) => {
+            const [lon, lat] = mga50ToWgs84([e, n]);
+            return [lon, lat, z];
+          }),
         },
         properties: {
           name: r.name,
@@ -447,20 +470,23 @@ function buildLineFeaturesFrom12d(records) {
           depthAccuracy: "surveyed",
           rawColour: r.colour,
           colour: normalizeColour(r.colour),
+          layerKind,
         },
       }));
   });
   return { features, skippedShort };
 }
 
-// LineString.coordinates is already a flat [lon,lat] point list (depth 1).
+// LineString.coordinates is already a flat point list (depth 1).
 // Polygon.coordinates (added 2026-08-26, for surface triangles) is one
 // level deeper — an array of rings, each a point list (depth 2) — so it
 // needs exactly one extra level flattened to reach real points, no more
-// (naively flattening everything would shred each [lon,lat] pair itself
-// into loose numbers).
+// (naively flattening everything would shred each point itself into loose
+// numbers). Slices off the 3rd (elevation) coordinate value, if present —
+// mapboxgl.LngLatBounds.extend() only wants [lon, lat].
 function pointsOf(geometry) {
-  return geometry.type === "Polygon" ? geometry.coordinates.flat(1) : geometry.coordinates;
+  const points = geometry.type === "Polygon" ? geometry.coordinates.flat(1) : geometry.coordinates;
+  return points.map(([lon, lat]) => [lon, lat]);
 }
 
 function fitMapToFeatures(features) {
@@ -546,6 +572,10 @@ function createSurfaceFeatureController({ sourceId, fillLayerId, lineLayerId, gr
       createSourceAndLayers({ type: "FeatureCollection", features: allFeatures });
       applyFilter();
     },
+    /** See createLineFeatureController()'s getVisibleFeatures() — same idea. */
+    getVisibleFeatures() {
+      return allFeatures.filter((f) => checkedSurfaces.has(f.properties.surfaceName));
+    },
   };
 }
 
@@ -582,7 +612,14 @@ function buildSurfaceFeaturesFrom12d(surfaces) {
       })
       .map(({ tri, nulling }) => {
         const verts = tri.map((i) => surf.points[i]); // 3x [E, N, Z]
-        const ring = verts.map(([e, n]) => mga50ToWgs84([e, n]));
+        // Keeps real elevation as each ring point's 3rd coordinate value
+        // (Mapbox's fill/line layers ignore it) — section-intersect.js
+        // needs it to interpolate the surface's elevation where the cut
+        // line crosses this triangle, not just its plan-view outline.
+        const ring = verts.map(([e, n, z]) => {
+          const [lon, lat] = mga50ToWgs84([e, n]);
+          return [lon, lat, z];
+        });
         ring.push(ring[0]); // close the polygon ring
         const elevations = verts.map(([, , z]) => z);
         return {
@@ -828,7 +865,7 @@ async function handleDesign12dFile(file) {
     let allNewFeatures = [];
 
     if (hasLinework) {
-      const { features, skippedShort } = buildLineFeaturesFrom12d(records);
+      const { features, skippedShort } = buildLineFeaturesFrom12d(records, "design-linework");
       if (skippedShort > 0) {
         console.warn(`[K2-2D] Skipped ${skippedShort} design linework segment(s) with <2 points.`);
       }
@@ -879,7 +916,7 @@ function wireServicesInput() {
       // buildLineFeaturesFrom12d() / twelve-d.js splitOnGaps() for how
       // both are handled (found against a real 800-record weekly
       // export; reported by Cameron as "pits seem to be joining up").
-      const { features, skippedShort } = buildLineFeaturesFrom12d(records);
+      const { features, skippedShort } = buildLineFeaturesFrom12d(records, "services");
       if (skippedShort > 0) {
         console.warn(
           `[K2-2D] Skipped ${skippedShort} segment(s) with <2 points (point/symbol data, or an ` +
@@ -956,11 +993,31 @@ function wireMapToolbar() {
       profileChartEl.innerHTML = "";
       try {
         const profile = await fetchElevationProfile(lineCoordsWgs84, token);
+
+        // Cut-line crossings against whatever's currently checked "on" in
+        // the sidebar — services, design linework, design surfaces (added
+        // 2026-08-26 per Cameron: "need to be able to see these layers on
+        // the section view as well"). NOT the IFC design layer — see
+        // section-intersect.js's header for why (only a bounding-box
+        // footprint is tracked in 2D, not real geometry to intersect).
+        const crossings = computeSectionCrossings(lineCoordsWgs84, {
+          lineFeatures: [
+            ...servicesController.getVisibleFeatures(),
+            ...designLineworkController.getVisibleFeatures(),
+          ],
+          surfaceFeatures: designSurfaceController.getVisibleFeatures(),
+        });
+
+        const crossingCount = crossings.lineCrossings.length + crossings.surfaceChords.length;
         profileSummaryEl.textContent =
-          `Length: ${profile.totalDistanceM.toFixed(1)} m. Terrain elevation only ` +
-          "(Mapbox Terrain-RGB, coarse — see README). Design/services not yet " +
-          "intersected with the cut line.";
-        renderProfileChart(profileChartEl, profile);
+          `Length: ${profile.totalDistanceM.toFixed(1)} m. Terrain elevation from Mapbox ` +
+          "Terrain-RGB (coarse — see README)" +
+          (crossingCount > 0
+            ? `, plus ${crossings.lineCrossings.length} service/linework crossing(s) and ` +
+              `${crossings.surfaceChords.length} surface segment(s) below, at real surveyed/design ` +
+              "elevation. IFC design geometry isn't intersected yet (only its footprint is tracked in 2D)."
+            : ". No currently-visible service/linework/surface layers cross this line.");
+        renderProfileChart(profileChartEl, profile, crossings);
       } catch (err) {
         console.error(err);
         profileSummaryEl.textContent = `Failed to build profile: ${err.message}`;
