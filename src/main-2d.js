@@ -24,6 +24,9 @@ import { mga50ToWgs84 } from "./crs.js";
 import { extractGeoreference } from "./ifc.js";
 import { loadTwelveDaFile } from "./twelve-d.js";
 import { createLayerGroup } from "./layer-tree.js";
+import { createDrawTools } from "./draw-tools.js";
+import { fetchElevationProfile } from "./elevation-profile.js";
+import { renderProfileChart } from "./profile-chart.js";
 
 const statusEl = document.getElementById("status-bar");
 function setStatus(msg) {
@@ -81,6 +84,7 @@ map.on("load", () => {
   addCustomLayers();
   wireIfcInput();
   wireServicesInput();
+  wireMapToolbar();
 });
 
 // Base style switches destroy all custom sources/layers; re-add them
@@ -337,4 +341,108 @@ function wireServicesInput() {
       setStatus(`Failed to load ${file.name}: ${err.message}`);
     }
   });
+}
+
+// --- Map toolbar: measure (distance/area) + section/profile ------------
+//
+// "Section" (per Cameron, 2026-08-24): draw a line, split the view so a
+// profile pane opens alongside the map (a "Civillo"-style layout — see
+// README) showing elevation-vs-distance along that line, sampled from
+// the same Mapbox Terrain-RGB data used as the 3D scene's terrain
+// fallback (elevation-profile.js / terrain-rgb.js). This is a plan-view
+// tool only for now — it doesn't yet intersect the loaded IFC design or
+// 12d services along the cut line, just terrain. Chose a side-by-side
+// split (map | profile) rather than stacked top/bottom, matching how
+// Civil3D/most section tools pair a plan view with a profile view —
+// flag to Cameron if a stacked layout was actually meant.
+
+function wireMapToolbar() {
+  const btnDistance = document.getElementById("tool-distance");
+  const btnArea = document.getElementById("tool-area");
+  const btnSection = document.getElementById("tool-section");
+  const btnClear = document.getElementById("tool-clear");
+  const measureResultEl = document.getElementById("measure-result");
+  const profilePane = document.getElementById("profile-pane");
+  const profileSummaryEl = document.getElementById("profile-summary");
+  const profileChartEl = document.getElementById("profile-chart");
+  const profileCloseBtn = document.getElementById("profile-close");
+
+  const toolButtons = [btnDistance, btnArea, btnSection];
+  function setActiveTool(activeBtn) {
+    for (const b of toolButtons) b.classList.toggle("active", b === activeBtn);
+  }
+
+  function showMeasureResult(text) {
+    measureResultEl.textContent = text;
+    measureResultEl.classList.toggle("active", !!text);
+  }
+
+  // Mapbox GL does auto-detect its container resizing (ResizeObserver),
+  // but calling resize() explicitly right after the flex layout changes
+  // is cheap, harmless if redundant, and removes any doubt — couldn't
+  // visually confirm the auto-resize timing in my test environment (see
+  // README's rendering-verification note), so not leaving it to chance.
+  function afterPaneToggle() {
+    requestAnimationFrame(() => map.resize());
+  }
+
+  function closeProfilePane() {
+    profilePane.classList.remove("active");
+    setActiveTool(null);
+    afterPaneToggle();
+  }
+
+  const tools = createDrawTools(map, {
+    onMeasureResult: showMeasureResult,
+    onSectionLine: async (lineCoordsWgs84) => {
+      setActiveTool(null); // section is single-shot; drawing is done
+      profilePane.classList.add("active");
+      afterPaneToggle();
+      profileSummaryEl.textContent = "Sampling terrain elevation along the line…";
+      profileChartEl.innerHTML = "";
+      try {
+        const profile = await fetchElevationProfile(lineCoordsWgs84, token);
+        profileSummaryEl.textContent =
+          `Length: ${profile.totalDistanceM.toFixed(1)} m. Terrain elevation only ` +
+          "(Mapbox Terrain-RGB, coarse — see README). Design/services not yet " +
+          "intersected with the cut line.";
+        renderProfileChart(profileChartEl, profile);
+      } catch (err) {
+        console.error(err);
+        profileSummaryEl.textContent = `Failed to build profile: ${err.message}`;
+      }
+    },
+  });
+
+  btnDistance.addEventListener("click", () => {
+    setActiveTool(btnDistance);
+    closeProfilePaneKeepingTool();
+    tools.startDistance();
+  });
+  btnArea.addEventListener("click", () => {
+    setActiveTool(btnArea);
+    closeProfilePaneKeepingTool();
+    tools.startArea();
+  });
+  btnSection.addEventListener("click", () => {
+    setActiveTool(btnSection);
+    showMeasureResult("");
+    tools.startSection();
+  });
+  btnClear.addEventListener("click", () => {
+    tools.clear();
+    closeProfilePane();
+  });
+  profileCloseBtn.addEventListener("click", () => {
+    tools.stop();
+    closeProfilePane();
+  });
+
+  // Starting a measurement while the profile pane is open should close
+  // it (they're different tools sharing the same draw layer) without
+  // touching the measure-result badge, which the caller sets separately.
+  function closeProfilePaneKeepingTool() {
+    profilePane.classList.remove("active");
+    afterPaneToggle();
+  }
 }

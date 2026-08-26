@@ -10,9 +10,11 @@
     "preview": "vite preview"
   },
   "dependencies": {
+    "@mapbox/mapbox-gl-draw": "^1.5.1",
     "@thatopen/components": "^3.4.8",
     "@thatopen/fragments": "^3.4.7",
     "@thatopen/ui": "^3.4.10",
+    "@turf/turf": "^7.4.0",
     "mapbox-gl": "^3.29.0",
     "proj4": "^2.11.0",
     "three": "^0.185.1"

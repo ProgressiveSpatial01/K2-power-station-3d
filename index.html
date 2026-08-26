@@ -70,7 +70,59 @@
         width: 10px; height: 10px; border-radius: 2px; flex-shrink: 0; border: 1px solid rgba(255,255,255,0.3);
       }
 
-      #map { flex: 1; position: relative; }
+      /* Map area: map + (optional) section-profile pane side by side */
+      #map-area { flex: 1; display: flex; min-width: 0; }
+      /* Mapbox owns #map's DOM internally (it warns if given non-empty
+         children) — the toolbar/measure-result overlays live in this
+         wrapper instead, positioned absolutely over the map canvas. */
+      #map-wrapper { flex: 1; position: relative; min-width: 0; }
+      #map { position: absolute; inset: 0; }
+
+      #profile-pane {
+        flex: 0 0 420px;
+        display: none;
+        flex-direction: column;
+        background: #17181a;
+        color: #e6e6e6;
+        border-left: 1px solid #333;
+      }
+      #profile-pane.active { display: flex; }
+      #profile-header {
+        display: flex; align-items: center; justify-content: space-between;
+        padding: 10px 14px; border-bottom: 1px solid #2c2e31; flex-shrink: 0;
+      }
+      #profile-header h2 { font-size: 12px; margin: 0; color: #ddd; text-transform: uppercase; letter-spacing: 0.06em; }
+      #profile-close {
+        background: none; border: 1px solid #444; color: #aaa; border-radius: 4px;
+        padding: 3px 8px; cursor: pointer; font-size: 12px;
+      }
+      #profile-close:hover { color: #fff; border-color: #666; }
+      #profile-body { flex: 1; padding: 14px; overflow-y: auto; }
+      #profile-summary { font-size: 11px; color: #8a8f98; margin-bottom: 10px; }
+      .profile-empty { color: #888; font-size: 12px; }
+
+      /* Floating vertical map toolbar, left edge of the map (à la Civillo) */
+      #map-toolbar {
+        position: absolute; top: 14px; left: 14px; z-index: 5;
+        display: flex; flex-direction: column; gap: 6px;
+        background: rgba(23,24,26,0.9); border: 1px solid #333; border-radius: 6px;
+        padding: 6px;
+      }
+      #map-toolbar button {
+        display: block; width: 84px; text-align: left;
+        background: none; border: none; color: #ccc; font-size: 12px;
+        padding: 6px 8px; border-radius: 4px; cursor: pointer;
+      }
+      #map-toolbar button:hover { background: #2a2d31; color: #fff; }
+      #map-toolbar button.active { background: #2fa3ff; color: #fff; }
+      #map-toolbar hr { border: none; border-top: 1px solid #333; margin: 2px 4px; }
+
+      #measure-result {
+        position: absolute; top: 14px; left: 112px; z-index: 5;
+        background: rgba(23,24,26,0.9); border: 1px solid #333; border-radius: 6px;
+        padding: 8px 12px; font-size: 12px; color: #ffb454; display: none;
+      }
+      #measure-result.active { display: block; }
     </style>
   </head>
   <body>
@@ -95,7 +147,30 @@
           </section>
         </div>
       </aside>
-      <div id="map"></div>
+      <div id="map-area">
+        <div id="map-wrapper">
+          <div id="map"></div>
+          <div id="map-toolbar">
+            <button id="tool-distance" title="Measure distance">📏 Distance</button>
+            <button id="tool-area" title="Measure area">▱ Area</button>
+            <hr />
+            <button id="tool-section" title="Cut a section/profile">⛰ Section</button>
+            <hr />
+            <button id="tool-clear" title="Clear the current measurement/section">✕ Clear</button>
+          </div>
+          <div id="measure-result"></div>
+        </div>
+        <div id="profile-pane">
+          <div id="profile-header">
+            <h2>Section Profile</h2>
+            <button id="profile-close">✕ Close</button>
+          </div>
+          <div id="profile-body">
+            <div id="profile-summary"></div>
+            <div id="profile-chart"></div>
+          </div>
+        </div>
+      </div>
     </div>
     <script type="module" src="/src/main-2d.js"></script>
   </body>

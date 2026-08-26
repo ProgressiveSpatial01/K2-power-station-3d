@@ -1,65 +1,17 @@
 // mapbox-terrain.js — Terrain-RGB DEM + satellite imagery as the default
 // terrain fallback when no drone DSM exists (see terrain.js). Real global
-// elevation data, coarse (source data only goes to z15 — Mapbox docs:
-// "Data up to zoom 15... higher zoom levels will not increase data
-// resolution") but genuinely surveyed/sourced, not synthetic.
+// elevation data, coarse (source data only goes to z15) but genuinely
+// surveyed/sourced, not synthetic.
 //
-// API details verified against Mapbox's own docs before writing this
-// (2026-08-24), not guessed:
-//   - Tile URL: https://api.mapbox.com/v4/{tileset}/{z}/{x}/{y}.{format}?access_token=...
-//   - Terrain-RGB tileset id: mapbox.terrain-rgb, format: .pngraw (the
-//     raw/undecorated encoding — plain .png can be re-styled).
-//   - Satellite tileset id: mapbox.satellite, format: .jpg90 (Mapbox
-//     always serves satellite as JPEG regardless of requested format).
-//   - Max zoom for real Terrain-RGB data: 15. Requesting higher just
-//     gets you the z15 data upsampled server-side, not more resolution
-//     — so this module fixes zoom at 15 rather than exposing it as a
-//     "quality" knob that would be misleading.
-//   - Height decode: metres = -10000 + (R*256*256 + G*256 + B) * 0.1
+// Shared tile-fetch/decode logic lives in terrain-rgb.js (no Three.js
+// dependency, so the 2D page's elevation-profile tool can reuse it
+// without pulling in Three.js) — this file adds the Three.js-specific
+// mesh-building on top, plus the satellite imagery texture (which the
+// profile tool doesn't need).
 
 import * as THREE from "three";
 import { mga50ToWgs84 } from "./crs.js";
-
-const TILE_SIZE = 256;
-const ZOOM = 15; // fixed — see comment above, this is Terrain-RGB's real max
-
-function lonLatToGlobalPixel(lon, lat, zoom) {
-  const n = 2 ** zoom;
-  const x = ((lon + 180) / 360) * n * TILE_SIZE;
-  const latRad = (lat * Math.PI) / 180;
-  const y =
-    ((1 - Math.log(Math.tan(latRad) + 1 / Math.cos(latRad)) / Math.PI) / 2) *
-    n *
-    TILE_SIZE;
-  return [x, y];
-}
-
-function globalPixelToTile(px, py) {
-  return [Math.floor(px / TILE_SIZE), Math.floor(py / TILE_SIZE)];
-}
-
-async function fetchTileCanvas(url) {
-  const resp = await fetch(url);
-  if (!resp.ok) {
-    throw new Error(`Mapbox tile fetch failed (HTTP ${resp.status}): ${url.replace(/access_token=[^&]+/, "access_token=***")}`);
-  }
-  const blob = await resp.blob();
-  const bitmap = await createImageBitmap(blob);
-  const canvas = document.createElement("canvas");
-  canvas.width = TILE_SIZE;
-  canvas.height = TILE_SIZE;
-  const ctx = canvas.getContext("2d");
-  ctx.drawImage(bitmap, 0, 0);
-  return { canvas, ctx, imageData: ctx.getImageData(0, 0, TILE_SIZE, TILE_SIZE) };
-}
-
-function decodeTerrainRgbHeight(imageData, px, py) {
-  const i = (py * TILE_SIZE + px) * 4;
-  const r = imageData.data[i];
-  const g = imageData.data[i + 1];
-  const b = imageData.data[i + 2];
-  return -10000 + (r * 256 * 256 + g * 256 + b) * 0.1;
-}
+import { TILE_SIZE, ZOOM, lonLatToGlobalPixel, fetchTileCanvas, fetchTerrainRgbCoverage } from "./terrain-rgb.js";
 
 /**
  * Build a real (if coarse) terrain mesh from Mapbox Terrain-RGB + Satellite
@@ -82,41 +34,29 @@ export async function getMapboxTerrain(originMga, token, opts = {}) {
     [originMga[0] + half, originMga[1] + half],
   ].map(([e, n]) => mga50ToWgs84([e, n]));
 
-  const globalPixels = corners.map(([lon, lat]) => lonLatToGlobalPixel(lon, lat, ZOOM));
-  const minPx = Math.min(...globalPixels.map((p) => p[0]));
-  const maxPx = Math.max(...globalPixels.map((p) => p[0]));
-  const minPy = Math.min(...globalPixels.map((p) => p[1]));
-  const maxPy = Math.max(...globalPixels.map((p) => p[1]));
+  const { sampleHeight, tileRange } = await fetchTerrainRgbCoverage(corners, token);
+  const { minTx, maxTx, minTy, maxTy } = tileRange;
 
-  const [minTx, minTy] = globalPixelToTile(minPx, minPy);
-  const [maxTx, maxTy] = globalPixelToTile(maxPx, maxPy);
-
-  const terrainTiles = new Map();
+  // Satellite imagery, fetched and stitched separately from the
+  // elevation tiles above (different tileset, same tile grid).
   const satelliteTiles = new Map();
-  const fetches = [];
+  const satFetches = [];
   for (let tx = minTx; tx <= maxTx; tx++) {
     for (let ty = minTy; ty <= maxTy; ty++) {
       const key = `${tx},${ty}`;
-      fetches.push(
-        fetchTileCanvas(
-          `https://api.mapbox.com/v4/mapbox.terrain-rgb/${ZOOM}/${tx}/${ty}.pngraw?access_token=${token}`
-        ).then((t) => terrainTiles.set(key, t))
-      );
-      fetches.push(
+      satFetches.push(
         fetchTileCanvas(
           `https://api.mapbox.com/v4/mapbox.satellite/${ZOOM}/${tx}/${ty}.jpg90?access_token=${token}`
         ).then((t) => satelliteTiles.set(key, t))
       );
     }
   }
-  await Promise.all(fetches);
+  await Promise.all(satFetches);
 
-  // Stitch satellite tiles into one texture. Note: this lays tiles out
-  // on a uniform mercator pixel grid, then the geometry loop below maps
-  // each vertex's true lon/lat into that same pixel space — so imagery
-  // alignment follows the real mercator projection, not an approximation
-  // across the small site extent (safe either way at this scale, but
-  // doing it properly costs nothing extra here).
+  // Stitch satellite tiles into one texture. This lays tiles out on a
+  // uniform mercator pixel grid, then the geometry loop below maps each
+  // vertex's true lon/lat into that same pixel space — so imagery
+  // alignment follows the real mercator projection, not an approximation.
   const tilesX = maxTx - minTx + 1;
   const tilesY = maxTy - minTy + 1;
   const stitched = document.createElement("canvas");
@@ -132,16 +72,6 @@ export async function getMapboxTerrain(originMga, token, opts = {}) {
   const texture = new THREE.CanvasTexture(stitched);
   texture.colorSpace = THREE.SRGBColorSpace;
   texture.needsUpdate = true;
-
-  function sampleHeight(lon, lat) {
-    const [px, py] = lonLatToGlobalPixel(lon, lat, ZOOM);
-    const [tx, ty] = globalPixelToTile(px, py);
-    const tile = terrainTiles.get(`${tx},${ty}`);
-    if (!tile) return null;
-    const localX = Math.min(TILE_SIZE - 1, Math.max(0, Math.floor(px - tx * TILE_SIZE)));
-    const localY = Math.min(TILE_SIZE - 1, Math.max(0, Math.floor(py - ty * TILE_SIZE)));
-    return decodeTerrainRgbHeight(tile.imageData, localX, localY);
-  }
 
   const geometry = new THREE.PlaneGeometry(extentM, extentM, segments, segments);
   geometry.rotateX(-Math.PI / 2); // XZ ground plane, Y up — matches crs.js mgaToScene()
