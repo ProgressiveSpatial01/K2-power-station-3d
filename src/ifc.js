@@ -294,6 +294,59 @@ export function computeIfcPlacement(georef, sceneOriginMga) {
 }
 
 /**
+ * Fallback georeference for IFC files with NO `IFCMAPCONVERSION` at all,
+ * whose raw geometry coordinates are themselves already real-world MGA50
+ * values — found 2026-08-26 in a real K2 IFC export ("Sample IFC.ifc",
+ * GT11 Stack Foundation): every `IFCCARTESIANPOINT` in its geometry is a
+ * real easting/northing (e.g. `384928.653, 6434079.441, 5.55`) directly,
+ * with the placement hierarchy chaining to local (0,0,0) — a third
+ * pattern, different from both GT11's own IfcMapConversion-offset
+ * approach and the "K2 Plant Grid" local-CRS case already handled above.
+ *
+ * Loading large real-world coordinates directly as mesh geometry risks
+ * exactly the float32 precision problem documented on
+ * computeFootprintCornersScene() above (that one was from a position
+ * *transform* I applied; this is the same class of problem but baked
+ * into the parsed geometry itself). Rather than build a workaround,
+ * this uses `@thatopen/components`' own answer to it: `IfcLoader`
+ * defaults `settings.webIfc.COORDINATE_TO_ORIGIN` to `true` (confirmed
+ * by reading the installed package source directly, not guessed —
+ * docs on this specific setting were thin) — web-ifc detects large
+ * coordinates during parsing and re-centres the model near the origin
+ * internally, exposing what it subtracted via
+ * `model.getCoordinationMatrix()`. This function reads that back.
+ *
+ * @param {*} model - loaded model from loadIfcFile()
+ * @returns {Promise<{ easting: number, northing: number, height: number, isPlausibleMga50: boolean }>}
+ */
+export async function resolveCoordinationOffset(model) {
+  const matrix = await model.getCoordinationMatrix(); // THREE.Matrix4
+  // Axis mapping below is EMPIRICAL, not derived from docs or source —
+  // @thatopen/components' own CoordinatesManager.getCoordinationMatrix()
+  // (a wrapper around the raw web-ifc API, not the same thing as
+  // web-ifc's own GetCoordinationMatrix()) does NOT simply put
+  // [easting, northing, height] in elements[12,13,14] as the naive
+  // reading of web-ifc's own docs/examples would suggest. Tested against
+  // Sample_IFC.ifc (real known coordinates ~E384928, ~N6434079, ~H5.55):
+  // got back {elements[12]: -384928.653, elements[13]: -5.55,
+  // elements[14]: 6434079.441} — i.e. (-E, -H, N), not (E, N, H). Verify
+  // again with a second real no-IfcMapConversion file if one shows up;
+  // don't assume this generalises beyond what's been tested.
+  const easting = -matrix.elements[12];
+  const height = -matrix.elements[13];
+  const northing = matrix.elements[14];
+  // Sanity range for GDA2020/MGA Zone 50 in WA — cheap guard against
+  // misreading a coordination matrix that's actually near-identity
+  // (e.g. a file whose own geometry was already small/local) as if it
+  // were a real offset. Not a CRS-name check like looksLikeGda2020Mga50()
+  // (there's no CRS name available here at all) — just a plausibility
+  // range check.
+  const isPlausibleMga50 =
+    easting > 200000 && easting < 900000 && northing > 6000000 && northing < 8000000;
+  return { easting, northing, height, isPlausibleMga50 };
+}
+
+/**
  * Compute a real (if approximate) 2D footprint for an already-placed
  * model, as an axis-aligned bounding-box outline in scene XZ — i.e. the
  * horizontal-plane bounding box of the model's world-space geometry

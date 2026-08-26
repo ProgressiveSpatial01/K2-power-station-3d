@@ -28,6 +28,7 @@ import {
   loadIfcFile,
   computeIfcPlacement,
   computeFootprintCornersScene,
+  resolveCoordinationOffset,
 } from "./ifc.js";
 import { loadTwelveDaFile } from "./twelve-d.js";
 import { createLayerGroup } from "./layer-tree.js";
@@ -77,7 +78,7 @@ const state = {
   ifcFootprintFeature: null,
   ifcRowAdded: false,
   serviceFeatures: [],
-  checkedServiceStyles: new Set(),
+  checkedServiceGroups: new Set(),
 };
 
 // Headless @thatopen/components engine, lazily set up on first IFC load
@@ -289,7 +290,7 @@ function addOrUpdateServicesLayer(features) {
       new mapboxgl.Popup()
         .setLngLat(e.lngLat)
         .setHTML(
-          `<b>${p.name ?? "Service"}</b> (${p.style ?? "unknown style"})<br>` +
+          `<b>${p.name ?? "Service"}</b><br>${p.model ?? ""} (style ${p.style ?? "?"})<br>` +
             `Diameter: ${p.diameter ?? "?"} m, justify: ${p.justify ?? "?"}<br>` +
             `Depth: surveyed (12d) — see 3D view for actual elevation.`
         )
@@ -299,30 +300,45 @@ function addOrUpdateServicesLayer(features) {
 
   applyServicesFilter(layerId);
 
-  // Add a sub-toggle for every style not already represented — mirrors
-  // CSBP's sub-grouping, but driven by a Mapbox `filter` on one shared
-  // layer rather than one Mapbox layer per style (cheaper, and scales
-  // to however many service styles a real K2 export turns out to have).
-  const stylesSeen = new Set(features.map((f) => f.properties.style ?? "(no style)"));
-  for (const style of stylesSeen) {
-    if (state.checkedServiceStyles.has(style)) continue; // already has a row
-    state.checkedServiceStyles.add(style);
+  // Add a sub-toggle for every 12d `model` not already represented — mirrors
+  // CSBP's sub-grouping, driven by a Mapbox `filter` on one shared layer
+  // rather than one Mapbox layer per group (cheaper, and scales to however
+  // many groups a real export has).
+  //
+  // Grouping by `model`, not `style`: found 2026-08-26 against a real
+  // 800-record weekly export that `style` is nearly useless for grouping
+  // there (734/800 records just have style "1"), while `model` gives real
+  // discipline categories (Sewer, Water, Power/High Voltage, Power/Low
+  // Voltage, Drainage, ...) — see twelve-d.js parse12da() for how model
+  // tracking works. Falls back to `style` only for exports (like the
+  // original small sample) that don't have meaningful model paths.
+  const groupsSeen = new Set(features.map((f) => f.properties.model));
+  for (const group of groupsSeen) {
+    if (state.checkedServiceGroups.has(group)) continue; // already has a row
+    state.checkedServiceGroups.add(group);
     servicesGroup.addRow({
-      label: style,
+      label: shortenModelLabel(group),
       color: "#2fa3ff",
       checked: true,
       onChange: (checked) => {
-        if (checked) state.checkedServiceStyles.add(style);
-        else state.checkedServiceStyles.delete(style);
+        if (checked) state.checkedServiceGroups.add(group);
+        else state.checkedServiceGroups.delete(group);
         applyServicesFilter(layerId);
       },
     });
   }
 }
 
+/** "04 K2 Power Station/Services/Loc/Power/Low Voltage" -> "Power/Low Voltage" — the sidebar column is narrow, and every group in one export tends to share a long common prefix. Purely cosmetic; the full path stays in `properties.model` for popups/filtering. */
+function shortenModelLabel(model) {
+  if (!model) return "(unlabelled)";
+  const parts = model.split("/");
+  return parts.length > 2 ? parts.slice(-2).join("/") : model;
+}
+
 function applyServicesFilter(layerId) {
-  const checked = [...state.checkedServiceStyles];
-  map.setFilter(layerId, ["in", ["get", "style"], ["literal", checked]]);
+  const checked = [...state.checkedServiceGroups];
+  map.setFilter(layerId, ["in", ["get", "model"], ["literal", checked]]);
 }
 
 function wireIfcInput() {
@@ -334,11 +350,8 @@ function wireIfcInput() {
     try {
       const buffer = new Uint8Array(await file.arrayBuffer());
       const georef = extractGeoreference(buffer);
-      if (!georef) {
-        setStatus(`No IFCMAPCONVERSION found in ${file.name} — can't place it on the map.`);
-        return;
-      }
-      if (!georef.isKnownMga50) {
+
+      if (georef && !georef.isKnownMga50) {
         // See ifc.js extractGeoreference() — a real K2 file has been seen
         // with a "K2 Plant Grid" target CRS, not GDA2020/MGA50. Its
         // offset is NOT a trustworthy real-world coordinate; plotting it
@@ -354,58 +367,106 @@ function wireIfcInput() {
         return;
       }
 
-      const [lon, lat] = mga50ToWgs84([georef.eastingOffset, georef.northingOffset]);
-      const feature = {
-        type: "Feature",
-        geometry: { type: "Point", coordinates: [lon, lat] },
-        properties: {
-          name: file.name,
-          crsName: georef.crsName,
-          eastingOffset: georef.eastingOffset,
-          northingOffset: georef.northingOffset,
-          heightOffset: georef.heightOffset,
-        },
-      };
-      state.ifcFeature = feature;
-      addOrUpdateIfcLayer(feature, state.ifcFootprintFeature);
-      map.flyTo({ center: [lon, lat], zoom: 18 });
-      setStatus(
-        `Placed ${file.name} at MGA50 E${georef.eastingOffset} N${georef.northingOffset} ` +
-          `(${georef.crsName ?? "CRS name not found"}). Loading design geometry for a real footprint…`
-      );
+      if (georef) {
+        // Fast path: place the marker straight from the STEP-text
+        // georeference, before loading full geometry (which takes a few
+        // seconds the first time — fetches the web-ifc WASM).
+        const [lon, lat] = mga50ToWgs84([georef.eastingOffset, georef.northingOffset]);
+        const feature = {
+          type: "Feature",
+          geometry: { type: "Point", coordinates: [lon, lat] },
+          properties: {
+            name: file.name,
+            crsName: georef.crsName,
+            eastingOffset: georef.eastingOffset,
+            northingOffset: georef.northingOffset,
+            heightOffset: georef.heightOffset,
+          },
+        };
+        state.ifcFeature = feature;
+        addOrUpdateIfcLayer(feature, state.ifcFootprintFeature);
+        map.flyTo({ center: [lon, lat], zoom: 18 });
+        setStatus(
+          `Placed ${file.name} at MGA50 E${georef.eastingOffset} N${georef.northingOffset} ` +
+            `(${georef.crsName ?? "CRS name not found"}). Loading design geometry for a real footprint…`
+        );
+      } else {
+        setStatus(
+          `No IFCMAPCONVERSION found in ${file.name} — loading its geometry to check whether ` +
+            "real-world coordinates are baked in directly instead (see ifc.js resolveCoordinationOffset)…"
+        );
+      }
 
       // Compute a real footprint (bounding-box outline, see ifc.js
       // computeFootprintCornersScene()) by actually loading the IFC's
       // geometry through the same @thatopen/components pipeline the 3D
-      // page uses — first time this runs it fetches the web-ifc WASM,
-      // so expect a few seconds on the very first IFC load per session.
+      // page uses. For files with no IFCMAPCONVERSION, this is also the
+      // ONLY way to place them at all — see resolveCoordinationOffset().
       try {
         const { components, ifcLoader } = await getIfcEngine();
         const { model } = await loadIfcFile(components, ifcLoader, file);
 
-        // IMPORTANT: use the georef's OWN offset as the local origin
-        // (matching main.js's SCENE_ORIGIN_MGA pattern), not [0,0,0].
-        // First attempt used [0,0,0] on the theory that "scene" coords
-        // would then just equal true MGA — mathematically fine, but a
-        // real bug in practice: it positions the Three.js object at a
-        // ~6.4-million-unit translation, which blows past float32's
-        // precision for the ~10m-scale local geometry sitting on top of
-        // it (float32 has ~7 significant decimal digits; at 6.4 million
-        // the per-unit resolution is already <1m). Caught by checking
-        // the actual output coordinates: came back near Antarctica
-        // instead of Kwinana. Keeping the model near the ORIGIN during
-        // measurement (as the 3D page already correctly does) avoids
-        // this entirely — only convert back to real MGA at the very end.
-        const localOrigin = [georef.eastingOffset, georef.northingOffset, georef.heightOffset];
-        const placement = computeIfcPlacement(georef, localOrigin);
-        model.object.position.set(...placement.position); // ~[0,0,0]
-        model.object.rotation.y = placement.rotationY;
+        let localOrigin; // [easting, northing, height] — see crs.js mgaToScene()/sceneToMga()
+        let crsLabel;
+
+        if (georef) {
+          // IMPORTANT: use the georef's OWN offset as the local origin
+          // (matching main.js's SCENE_ORIGIN_MGA pattern), not [0,0,0].
+          // An earlier attempt used [0,0,0] on the theory that "scene"
+          // coords would then just equal true MGA — mathematically fine,
+          // but a real bug in practice: it positions the Three.js object
+          // at a ~6.4-million-unit translation, which blows past
+          // float32's precision for the ~10m-scale local geometry
+          // sitting on top of it. Caught by checking the actual output
+          // coordinates: came back near Antarctica instead of Kwinana.
+          // Keeping the model near the ORIGIN during measurement (as the
+          // 3D page already correctly does) avoids this entirely — only
+          // convert back to real MGA at the very end.
+          localOrigin = [georef.eastingOffset, georef.northingOffset, georef.heightOffset];
+          const placement = computeIfcPlacement(georef, localOrigin);
+          model.object.position.set(...placement.position); // ~[0,0,0]
+          model.object.rotation.y = placement.rotationY;
+          crsLabel = georef.crsName ?? "CRS name not found";
+        } else {
+          // No IFCMAPCONVERSION at all. Try the coordination-matrix
+          // fallback: web-ifc's own COORDINATE_TO_ORIGIN (on by default)
+          // already re-centred this model's geometry near the origin
+          // internally if its raw coordinates were large/real-world —
+          // no position/rotation of our own needed, just read back what
+          // it subtracted.
+          const offset = await resolveCoordinationOffset(model);
+          if (!offset.isPlausibleMga50) {
+            setStatus(
+              `${file.name} has no IFCMAPCONVERSION, and its geometry's own coordinates don't ` +
+                "look like real GDA2020/MGA50 either — can't place it on the map. See console."
+            );
+            console.warn("[K2-2D] Coordination offset outside plausible MGA50 range, not plotted:", offset);
+            return;
+          }
+          localOrigin = [offset.easting, offset.northing, offset.height];
+          crsLabel =
+            "no IFCMAPCONVERSION — inferred from the geometry's own real-world coordinates " +
+            "(web-ifc COORDINATE_TO_ORIGIN)";
+
+          const [lon, lat] = mga50ToWgs84([localOrigin[0], localOrigin[1]]);
+          const feature = {
+            type: "Feature",
+            geometry: { type: "Point", coordinates: [lon, lat] },
+            properties: {
+              name: file.name,
+              crsName: crsLabel,
+              eastingOffset: localOrigin[0],
+              northingOffset: localOrigin[1],
+              heightOffset: localOrigin[2],
+            },
+          };
+          state.ifcFeature = feature;
+          addOrUpdateIfcLayer(feature, state.ifcFootprintFeature);
+          map.flyTo({ center: [lon, lat], zoom: 18 });
+        }
 
         const corners = computeFootprintCornersScene(model); // [[x,z], ...] small scene units, safe precision
-        const ring = corners.map(([x, z]) => {
-          const [e, n] = sceneToMga([x, 0, z], localOrigin);
-          return mga50ToWgs84([e, n]);
-        });
+        const ring = corners.map(([x, z]) => mga50ToWgs84(sceneToMga([x, 0, z], localOrigin)));
         ring.push(ring[0]); // close the polygon ring
 
         const footprintFeature = {
@@ -414,20 +475,27 @@ function wireIfcInput() {
           properties: { name: file.name },
         };
         state.ifcFootprintFeature = footprintFeature;
-        addOrUpdateIfcLayer(feature, footprintFeature);
+        addOrUpdateIfcLayer(state.ifcFeature, footprintFeature);
 
         setStatus(
-          `Placed ${file.name} at MGA50 E${georef.eastingOffset} N${georef.northingOffset} ` +
-            `(${georef.crsName ?? "CRS name not found"}). Footprint shown is an axis-aligned ` +
-            "bounding-box outline, not the true design shape (see ifc.js) — good enough for a " +
-            "rectangular, unrotated design like GT11, looser for anything rotated or non-rectangular."
+          `Placed ${file.name} at MGA50 E${localOrigin[0].toFixed(3)} N${localOrigin[1].toFixed(3)} ` +
+            `(${crsLabel}). Footprint shown is an axis-aligned bounding-box outline, not the true ` +
+            "design shape (see ifc.js) — good enough for a rectangular, unrotated design, looser " +
+            "for anything rotated or non-rectangular."
         );
       } catch (err) {
-        console.error("[K2-2D] Footprint geometry load failed, keeping point marker only:", err);
-        setStatus(
-          `Placed ${file.name}'s base point, but couldn't load its geometry for a footprint: ` +
-            `${err.message} (see console).`
-        );
+        console.error("[K2-2D] Geometry load failed:", err);
+        if (georef) {
+          setStatus(
+            `Placed ${file.name}'s base point, but couldn't load its geometry for a footprint: ` +
+              `${err.message} (see console).`
+          );
+        } else {
+          setStatus(
+            `Couldn't load ${file.name}'s geometry (needed since it has no IFCMAPCONVERSION): ` +
+              `${err.message} (see console).`
+          );
+        }
       }
     } catch (err) {
       console.error(err);
@@ -446,20 +514,35 @@ function wireServicesInput() {
       const records = await loadTwelveDaFile(file);
       console.log("[K2-2D] Parsed 12d records:", records);
 
-      const features = records.map((r) => ({
-        type: "Feature",
-        geometry: {
-          type: "LineString",
-          coordinates: r.centrelinePoints.map(([e, n]) => mga50ToWgs84([e, n])),
-        },
-        properties: {
-          name: r.name,
-          style: r.style ?? "(no style)",
-          diameter: r.diameter,
-          justify: r.justify,
-          depthAccuracy: "surveyed",
-        },
-      }));
+      // Some real exports include point/symbol features (data_2d, no
+      // data_3d — e.g. SDR survey pickups, symbol placements) alongside
+      // line strings. A GeoJSON LineString needs >=2 coordinates; found
+      // this the hard way against a real 800-record weekly export that
+      // included some of these. Skip them for the line layer rather than
+      // feeding Mapbox invalid geometry — they're not services with a
+      // depth/diameter to extrude/plot as a line anyway.
+      const skipped = records.filter((r) => r.centrelinePoints.length < 2).length;
+      if (skipped > 0) {
+        console.warn(`[K2-2D] Skipped ${skipped}/${records.length} record(s) with <2 points (point/symbol data, not a line).`);
+      }
+
+      const features = records
+        .filter((r) => r.centrelinePoints.length >= 2)
+        .map((r) => ({
+          type: "Feature",
+          geometry: {
+            type: "LineString",
+            coordinates: r.centrelinePoints.map(([e, n]) => mga50ToWgs84([e, n])),
+          },
+          properties: {
+            name: r.name,
+            model: r.model ?? "(unlabelled)",
+            style: r.style ?? "(no style)",
+            diameter: r.diameter,
+            justify: r.justify,
+            depthAccuracy: "surveyed",
+          },
+        }));
 
       state.serviceFeatures = state.serviceFeatures.concat(features);
       addOrUpdateServicesLayer(state.serviceFeatures);

@@ -85,62 +85,114 @@ function setKey(obj, key, value) {
   }
 }
 
+/**
+ * Parse one `key value` / `key { ... }` / `key subtype { ... }` statement
+ * at the current position. Shared by parseBlock() (unordered accumulation
+ * into an object, used for a string's own body) and parse12da()'s
+ * top-level loop (which needs document ORDER preserved — see the
+ * `model "..."` tracking note below, lost by naive accumulation).
+ * @returns {{ key: string, value: * }}
+ */
+// Known 12d "typed attribute" tags: `text "name" "value"` / `real "name" 0` /
+// `integer "name" 5` — a 3-token statement (type tag, quoted name, value),
+// found 2026-08-26 inside `attributes { ... }` / `group { ... }` blocks in a
+// real 800-string weekly export (not present in the earlier small sample).
+// Distinguished from the normal 2-token `key value` form by keyTok being one
+// of these specific tags AND the immediately following token being a quoted
+// name — a real `key` is never itself one of these words followed by a
+// second value token. We don't currently read any of these attributes
+// (asset owner, survey type, SDR setup, etc. — all several layers deep in
+// `attributes`/`group` nesting parse12da() never looks inside), so the
+// attribute's type is discarded and only {name: value} is kept — enough to
+// parse correctly without crashing, not enough to claim we use this data.
+const TYPED_ATTRIBUTE_TAGS = new Set(["text", "real", "integer"]);
+
+function readNumberRow(tokens, pos, rowLength) {
+  expectBrace(tokens, pos, "{");
+  const rows = [];
+  let row = [];
+  while (pos.i < tokens.length && tokens[pos.i].value !== "}") {
+    const t = tokens[pos.i++];
+    const num = Number(t.value);
+    if (Number.isNaN(num)) {
+      throw new Error(`12da parse error: expected number, got "${t.value}"`);
+    }
+    row.push(num);
+    if (row.length === rowLength) {
+      rows.push(row);
+      row = [];
+    }
+  }
+  expectBrace(tokens, pos, "}");
+  return rows;
+}
+
+function parseStatement(tokens, pos) {
+  const keyTok = tokens[pos.i++];
+  if (keyTok.type !== "ATOM") {
+    throw new Error(`12da parse error: expected key, got ${JSON.stringify(keyTok)}`);
+  }
+  const key = keyTok.value;
+
+  if (key === "data_3d") {
+    return { key, value: readNumberRow(tokens, pos, 3) };
+  }
+  if (key === "data_2d") {
+    // 2D-only points (symbol pickups etc. with no elevation) — not used by
+    // parse12da()'s output today, kept only so parsing doesn't corrupt on it.
+    return { key, value: readNumberRow(tokens, pos, 2) };
+  }
+
+  if (TYPED_ATTRIBUTE_TAGS.has(key) && tokens[pos.i]?.type === "STRING") {
+    const nameTok = tokens[pos.i++];
+    const valTok = tokens[pos.i++];
+    return { key: nameTok.value, value: valTok.value };
+  }
+
+  const t1 = tokens[pos.i];
+  if (t1 && t1.type === "BRACE" && t1.value === "{") {
+    pos.i++;
+    const value = parseBlock(tokens, pos);
+    expectBrace(tokens, pos, "}");
+    return { key, value };
+  }
+  if (
+    t1 &&
+    t1.type === "ATOM" &&
+    tokens[pos.i + 1] &&
+    tokens[pos.i + 1].type === "BRACE" &&
+    tokens[pos.i + 1].value === "{"
+  ) {
+    const subtype = t1.value;
+    pos.i += 2;
+    const value = parseBlock(tokens, pos);
+    expectBrace(tokens, pos, "}");
+    value.__subtype = subtype;
+    return { key, value };
+  }
+  // Scalar value.
+  const valTok = tokens[pos.i++];
+  return { key, value: valTok.value };
+}
+
 function parseBlock(tokens, pos) {
+  // Some blocks (e.g. `point_data { "0013" "0014" ... }`, a flat list of
+  // vertex/point ids — found 2026-08-26 in a real weekly export) are NOT
+  // key/value pairs at all, just a bare sequence of quoted strings. Detect
+  // this by peeking: a real key is always an ATOM: if the first token in
+  // the block is a STRING instead, treat the whole block as a plain list.
+  if (tokens[pos.i] && tokens[pos.i].type === "STRING") {
+    const list = [];
+    while (pos.i < tokens.length && tokens[pos.i].value !== "}") {
+      list.push(tokens[pos.i++].value);
+    }
+    return list;
+  }
+
   const result = {};
   while (pos.i < tokens.length && tokens[pos.i].value !== "}") {
-    const keyTok = tokens[pos.i++];
-    if (keyTok.type !== "ATOM") {
-      throw new Error(`12da parse error: expected key, got ${JSON.stringify(keyTok)}`);
-    }
-    const key = keyTok.value;
-
-    if (key === "data_3d") {
-      expectBrace(tokens, pos, "{");
-      const rows = [];
-      let row = [];
-      while (pos.i < tokens.length && tokens[pos.i].value !== "}") {
-        const t = tokens[pos.i++];
-        const num = Number(t.value);
-        if (Number.isNaN(num)) {
-          throw new Error(`12da parse error: expected number in data_3d, got "${t.value}"`);
-        }
-        row.push(num);
-        if (row.length === 3) {
-          rows.push(row);
-          row = [];
-        }
-      }
-      expectBrace(tokens, pos, "}");
-      setKey(result, key, rows);
-      continue;
-    }
-
-    const t1 = tokens[pos.i];
-    if (t1 && t1.type === "BRACE" && t1.value === "{") {
-      pos.i++;
-      const value = parseBlock(tokens, pos);
-      expectBrace(tokens, pos, "}");
-      setKey(result, key, value);
-      continue;
-    }
-    if (
-      t1 &&
-      t1.type === "ATOM" &&
-      tokens[pos.i + 1] &&
-      tokens[pos.i + 1].type === "BRACE" &&
-      tokens[pos.i + 1].value === "{"
-    ) {
-      const subtype = t1.value;
-      pos.i += 2;
-      const value = parseBlock(tokens, pos);
-      expectBrace(tokens, pos, "}");
-      value.__subtype = subtype;
-      setKey(result, key, value);
-      continue;
-    }
-    // Scalar value.
-    const valTok = tokens[pos.i++];
-    setKey(result, key, valTok.value);
+    const { key, value } = parseStatement(tokens, pos);
+    setKey(result, key, value);
   }
   return result;
 }
@@ -151,11 +203,6 @@ function expectBrace(tokens, pos, value) {
     throw new Error(`12da parse error: expected "${value}", got ${JSON.stringify(t)}`);
   }
   pos.i++;
-}
-
-function ensureArray(x) {
-  if (x === undefined) return [];
-  return Array.isArray(x) ? x : [x];
 }
 
 /** justify -> fraction of diameter to ADD to the given Z to reach centreline. */
@@ -170,10 +217,27 @@ const JUSTIFY_TO_CENTRE_OFFSET = {
 
 /**
  * Parse decoded 12da text into a flat list of service-string records.
+ *
+ * IMPORTANT — `model` grouping (found 2026-08-26, a real 800-string
+ * weekly export, not the earlier 2-string sample): a real 12d export
+ * declares `model "path/like/this"` as a bare top-level statement, NOT
+ * a block — everything doesn't nest inside it. Every `string` statement
+ * that follows belongs to whichever `model` was most recently declared,
+ * until the next `model` line. This top-level sequence therefore can't
+ * use parseBlock()'s unordered key/value accumulation (which would just
+ * merge every `model` declaration into one array, losing which strings
+ * went with which) — it needs a dedicated ordered loop instead. In the
+ * real weekly file this `model` grouping is far more useful than
+ * `style`: 734 of 800 real strings just have `style: "1"`, while `model`
+ * gives real discipline categories (Sewer, Water, Power/High Voltage,
+ * Power/Low Voltage, Drainage, Communications, Earthing, Gas, Fuel
+ * Line, Unknown). Both are exposed; callers grouping the sidebar should
+ * prefer `model` over `style` where present.
+ *
  * @param {string} text - UTF-8 text (already decoded from UTF-16)
  * @returns {Array<{
- *   name: string, style: string|null, colour: string|null, closed: boolean,
- *   justify: string|null, diameter: number|null,
+ *   model: string|null, name: string, style: string|null, colour: string|null,
+ *   closed: boolean, justify: string|null, diameter: number|null,
  *   points: Array<[number, number, number]>,   // raw [E, N, Z] as given
  *   centrelinePoints: Array<[number, number, number]>, // justify-corrected
  *   raw: object
@@ -182,9 +246,20 @@ const JUSTIFY_TO_CENTRE_OFFSET = {
 export function parse12da(text) {
   const tokens = tokenize(text);
   const pos = { i: 0 };
-  const top = parseBlock(tokens, pos);
 
-  const strings = ensureArray(top.string);
+  const strings = [];
+  let currentModel = null;
+  while (pos.i < tokens.length) {
+    const { key, value } = parseStatement(tokens, pos);
+    if (key === "model") {
+      currentModel = value; // scalar string
+    } else if (key === "string") {
+      strings.push({ ...value, __model: currentModel });
+    }
+    // Any other top-level key (none seen in real exports so far) is
+    // silently ignored rather than guessed at.
+  }
+
   return strings.map((s) => {
     const diameter = s.pipe_value ? Number(s.pipe_value.diameter) : null;
     const justify = s.justify ?? null;
@@ -199,6 +274,7 @@ export function parse12da(text) {
     }
 
     return {
+      model: s.__model,
       name: s.name ?? null,
       style: s.style ?? null,
       colour: s.colour ?? null,
