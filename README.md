@@ -459,7 +459,7 @@ Applied to both the 2D map and the 3D scene's `services.js` (same
 underlying bug there too) — the 3D fix hasn't been re-verified live
 given its separate known rendering issue (see "Known issues").
 
-### Design upload broadened to linework + IFC + (surfaces, unimplemented) — `src/main-2d.js`, `src/twelve-d.js`
+### Design upload broadened to linework + IFC + surfaces — `src/main-2d.js`, `src/twelve-d.js`
 
 Same message as the "rogue pits" report, Cameron added: **"the design
 upload probably needs to be able to support linework, .ifc (3d
@@ -470,28 +470,31 @@ trimesh), and surfaces."** Previously the "Design" upload slot
 - **`.ifc`** → `handleIfcDesignFile()` — the original IFC-loading logic,
   unchanged, just unwrapped from its inline file-input event listener
   into a standalone function so it can be called from the new router.
-- **`.12da` / `.12daz` (linework)** → `handleDesignLinework()` — reuses
-  the exact same 12d parsing/gap-splitting/colour pipeline already
-  proven against real data for Underground Services (`splitOnGaps()`,
-  `normalizeColour()`, `buildModelTree()`), rendered into a new
-  **Design → Linework** sidebar subgroup instead of Underground
-  Services. Factored the shared logic (feature-building from parsed
-  records, the nested model-tree sidebar controller, map-fit-to-bounds)
-  out of the old services-only code into `buildLineFeaturesFrom12d()`
-  and a generic `createLineFeatureController({ sourceId, layerId,
-  group, popupHtml })` — Services and Design Linework are now two
-  independent instances of the same controller, not two copies of the
-  same logic.
-- **Surfaces (TIN/DTM)**: Cameron confirmed (via question) these will
-  also be `.12da`/`.12daz`, same as services — but there's no real
-  surface/TIN sample yet to verify the block structure against, so
-  parsing isn't implemented. Rather than silently showing nothing,
-  `parse12da()` now tracks any top-level block key it doesn't
-  recognise (`unrecognizedTopLevelKeys`, e.g. a future `tin { ... }`)
-  and `handleDesignLinework()` surfaces it honestly in the status bar
-  ("might be a surface/TIN export, which isn't supported yet") instead
-  of just saying "no linework data." Needs a real sample before this
-  can go further — see "Open items."
+- **`.12da` / `.12daz`** → `handleDesign12dFile()` — a single `.12da`
+  file can contain linework (`string` records), surfaces (`full_tin`
+  records — see below), both, or neither; each kind is handled
+  independently if present:
+  - **Linework** reuses the exact same 12d parsing/gap-splitting/colour
+    pipeline already proven against real data for Underground Services
+    (`splitOnGaps()`, `normalizeColour()`, `buildModelTree()`), rendered
+    into a new **Design → Linework** sidebar subgroup instead of
+    Underground Services. Factored the shared logic (feature-building
+    from parsed records, the nested model-tree sidebar controller,
+    map-fit-to-bounds) out of the old services-only code into
+    `buildLineFeaturesFrom12d()` and a generic
+    `createLineFeatureController({ sourceId, layerId, group,
+    popupHtml })` — Services and Design Linework are now two
+    independent instances of the same controller, not two copies of the
+    same logic.
+  - **Surfaces**: at the time this upload slot was first broadened,
+    Cameron had confirmed (via question) these would also be
+    `.12da`/`.12daz`, same as services, but there was no real sample yet
+    to verify the block structure against — so `parse12da()` tracked any
+    unrecognised top-level block key (`unrecognizedTopLevelKeys`) and
+    surfaced it honestly ("might be a surface/TIN export, not supported
+    yet") rather than silently showing nothing. A real sample arrived
+    the same day — see "Design surfaces (`full_tin`) implemented" below
+    for the actual format and how it's now parsed and rendered.
 
 **Verified live** against both real sample files through the actual
 `#design-input` element (dispatched a real `change` event with a real
@@ -508,6 +511,67 @@ confirmed no regression from unwrapping `handleIfcDesignFile()` out of
 its old event-listener closure: placed at the correct MGA50 base point
 (E384899.031 N6434081.091, GDA2020 MGA Zone 50) with a real
 geometry-derived footprint landing on the actual GT11 site.
+
+### Design surfaces (`full_tin`) implemented — first real sample, "FL Surface.12daz" (2026-08-26)
+
+Cameron sent a real 12d surface export ("FL Surface.12daz", a "12d Quick
+Tin" test file) — the sample the "Open items" list had been waiting on.
+Its structure is completely different from a `string`:
+
+- A top-level `full_tin { ... }` block (not a bare statement like
+  `model`), containing `points { }` (one E/N/Z per point), `triangles { }`
+  (one 1-based point-index triple per triangle), `neighbours { }`
+  (adjacent-triangle indices, unused), and `nulling { }` (one flag per
+  triangle, a flat list — not grouped in 3s like the others).
+- **Coordinates are C99 hex-float literals** (`0x1.7593eff21e508p+18`),
+  not decimal — this export had `output_tin_hex_floats true` set.
+  Confirmed this is C's exact-base-2 `%a` printf format, NOT JavaScript's
+  `0x`-hex-INTEGER syntax (`Number()` silently mis-parses it, truncating
+  at the first `.`) — added a dedicated decoder,
+  `parseHexOrDecimalNumber()`, rather than extending the existing integer
+  parser. Verified by hand-decoding a few values against what the
+  filename/context implied (a K2-site point cluster) before trusting the
+  parser's output: they came back as real MGA50 coordinates right at the
+  K2 site (E384882-384965, N6433964-6434113) with plausible AHD
+  elevations (6.33-7.53m) — not garbage, and not coincidentally close to
+  a totally different place.
+- **The `nulling` flag's meaning isn't documented anywhere I could
+  find — its use here is inferred from this one file's geometry, not
+  from a 12d spec.** This sample has 8 points: 4 form a ~4.5km rectangle
+  at flat RL 0 (12d's automatic "quick tin" bounding box, added because
+  the real data was too sparse to triangulate alone — standard 12d
+  behaviour, not real design data) and 4 cluster tightly at the real K2
+  site with real elevations. Of the file's 10 triangles, exactly the 2
+  built ONLY from the 4 real points have `nulling: 2`; all 8 touching a
+  bounding-rectangle corner have `nulling: 1` — a clean split. Reading
+  this as "1 = auto-bounding scaffold, exclude / 2 = real design data,
+  keep" and filtering accordingly (`buildSurfaceFeaturesFrom12d()` in
+  `main-2d.js`) produces exactly the small 2-triangle quad sitting at the
+  real site — the geometrically sensible result — rather than the
+  useless flat 4.5km rectangle. **This interpretation needs Cameron's
+  confirmation before trusting it on a second, differently-shaped
+  surface** — if a future export's nulling values don't split this
+  cleanly, the inference doesn't generalise. See "Open items."
+
+Rendered as a new **Design → Surfaces** sidebar subgroup (one row per
+named surface, not the nested model-tree used for linework — a design
+typically has a handful of named surfaces, not hundreds of records, so a
+flat list is enough), one Mapbox fill+outline layer per triangle. This is
+a first-pass triangle mesh, not interpolated contours — good enough to
+confirm the format parses and places correctly; a proper hypsometric/
+contour rendering is future work if surfaces become a bigger part of the
+platform.
+
+**Verified**: parsed correctly against the real file both in Node and
+live in-browser (dynamic-imported `twelve-d.js`/`crs.js`/
+`service-colour.js` directly and ran the same feature-building logic
+`buildSurfaceFeaturesFrom12d()` uses — the Mapbox render loop itself was
+unavailable for a full end-to-end screenshot this session, since my test
+browser was backgrounded and suspends rendering/networking while not
+displayed, see "Known issues"). Output: 1 surface, 10 triangles
+parsed, 8 correctly excluded as scaffold, 2 kept — real MGA50
+coordinates at the K2 site, RL 6.33-7.53m, converted to valid WGS84
+polygon rings.
 
 - **Scope caveat**: this module only implements what the one sample
   needed (name/style/colour/closed/justify/diameter/data_3d). If a real
@@ -639,6 +703,9 @@ cut view, not a real terrain source. Verified: real sample pipes average
   - `12d/weekly-260826/260826 Service Upload.12daz` — a real, much
     larger (800-record) weekly services export — see "12d services
     import" for what parsing this against real data surfaced.
+  - `12d/surfaces/FL Surface.12daz` (+ `extracted/` — unzipped for
+    inspection) — a real "12d Quick Tin" surface/TIN export, the first
+    surface sample — see "Design surfaces (`full_tin`) implemented."
   Never commit real client data to this repo's git history, even
   privately — treat it the same as the "never store or log client data
   outside the local stack" rule from the wider platform work.
@@ -662,13 +729,15 @@ cut view, not a real terrain source. Verified: real sample pipes average
 5. Whether the existing K2 drawing-review work (IFC-status setout
    coordinate drawings, mentioned in the brief) has anything else
    reusable here.
-6. **A real 12d surface/TIN export** (`.12da`/`.12daz`, confirmed by
-   Cameron as the format) — needed to see the actual top-level block
-   structure (e.g. `tin { ... }`) before surface parsing can be
-   implemented in `twelve-d.js`/`main-2d.js`'s design-upload path. Until
-   then, uploading one through "Design" will surface an honest
-   "unrecognised block, might be a surface, not supported yet" message
-   rather than silently doing nothing — see "Design upload broadened."
+6. **Confirm the `full_tin` "nulling" flag's meaning** — a real surface
+   sample arrived and is now parsed and rendered (see "Design surfaces
+   (`full_tin`) implemented"), but the per-triangle `nulling` flag that
+   decides which triangles are real design data vs. auto-generated
+   bounding-box scaffold is inferred from this one file's geometry, not
+   from any 12d documentation. Worth Cameron confirming the reading (1 =
+   scaffold/exclude, 2 = real/keep) is right, and ideally testing against
+   a second, differently-shaped surface (a real design pad/finished-grade
+   surface, not a "Quick Tin" test file) to see if it generalises.
 7. **The 0.9m test cover-depth surface is explicitly a placeholder** —
    worth confirming with Cameron whether that's a reasonable assumption
    to keep using for further testing, or whether he'd rather it use a

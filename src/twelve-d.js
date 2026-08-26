@@ -1,6 +1,9 @@
 // twelve-d.js — parser for 12d Model's ".12da" ASCII archive export format
-// (and its zipped ".12daz" wrapper), targeting the "string" primitive with
-// 3D chainage data as used for underground services.
+// (and its zipped ".12daz" wrapper). Handles two structurally different
+// top-level primitives: `string` (3D chainage data, used for underground
+// services and design linework) and `full_tin` (a triangulated surface —
+// see parse12da()'s full_tin notes for its very different point-encoding
+// and structure).
 //
 // Format notes, learned from a real sample export (Sample 12d Pipe.12daz,
 // 12d Model 15.0C1v, K2 Power Station Services, 2026-08-24) rather than
@@ -107,17 +110,43 @@ function setKey(obj, key, value) {
 // parse correctly without crashing, not enough to claim we use this data.
 const TYPED_ATTRIBUTE_TAGS = new Set(["text", "real", "integer"]);
 
-function readNumberRow(tokens, pos, rowLength) {
+function parseStrictNumber(str) {
+  const num = Number(str);
+  if (Number.isNaN(num)) {
+    throw new Error(`12da parse error: expected number, got "${str}"`);
+  }
+  return num;
+}
+
+// C99 hex-float literal, e.g. "0x1.7593eff21e508p+18" or "0x0.0p+0" — the
+// encoding a real `full_tin { points { ... } } }` block uses for its
+// coordinates when the export has `output_tin_hex_floats true` set (found
+// 2026-08-26, "FL Surface.12daz" — a real 12d surface/TIN sample, the
+// first one seen; see parse12da()'s full_tin notes below). This is C's
+// `%a` printf format (exact base-2 float representation, no decimal
+// rounding), NOT JavaScript's `0x` hex-INTEGER syntax — Number() silently
+// mis-parses it (stops at the first non-hex-digit, i.e. the ".", giving a
+// truncated integer), so it needs its own decoder rather than reusing
+// parseStrictNumber. Falls back to a plain decimal parse for anything that
+// doesn't match, in case a differently-configured export ever gives plain
+// decimal points instead (untested — no such sample seen yet).
+function parseHexOrDecimalNumber(str) {
+  const m = /^(-)?0x([0-9a-fA-F]+)\.([0-9a-fA-F]+)p([+-]?\d+)$/i.exec(str);
+  if (!m) return parseStrictNumber(str);
+  const [, sign, intHex, fracHex, expStr] = m;
+  const intPart = parseInt(intHex, 16);
+  const fracPart = parseInt(fracHex, 16) / Math.pow(16, fracHex.length);
+  const value = (intPart + fracPart) * Math.pow(2, parseInt(expStr, 10));
+  return sign ? -value : value;
+}
+
+function readNumberRow(tokens, pos, rowLength, parseNum = parseStrictNumber) {
   expectBrace(tokens, pos, "{");
   const rows = [];
   let row = [];
   while (pos.i < tokens.length && tokens[pos.i].value !== "}") {
     const t = tokens[pos.i++];
-    const num = Number(t.value);
-    if (Number.isNaN(num)) {
-      throw new Error(`12da parse error: expected number, got "${t.value}"`);
-    }
-    row.push(num);
+    row.push(parseNum(t.value));
     if (row.length === rowLength) {
       rows.push(row);
       row = [];
@@ -125,6 +154,19 @@ function readNumberRow(tokens, pos, rowLength) {
   }
   expectBrace(tokens, pos, "}");
   return rows;
+}
+
+// Same idea as readNumberRow but for blocks that are one bare flat list of
+// numbers with no row grouping, e.g. `full_tin`'s `nulling { 2 1 1 ... }`
+// (one flag per triangle, not grouped in triples like `triangles`/`points`).
+function readFlatNumberList(tokens, pos, parseNum = parseStrictNumber) {
+  expectBrace(tokens, pos, "{");
+  const list = [];
+  while (pos.i < tokens.length && tokens[pos.i].value !== "}") {
+    list.push(parseNum(tokens[pos.i++].value));
+  }
+  expectBrace(tokens, pos, "}");
+  return list;
 }
 
 function parseStatement(tokens, pos) {
@@ -141,6 +183,19 @@ function parseStatement(tokens, pos) {
     // 2D-only points (symbol pickups etc. with no elevation) — not used by
     // parse12da()'s output today, kept only so parsing doesn't corrupt on it.
     return { key, value: readNumberRow(tokens, pos, 2) };
+  }
+  // `full_tin { ... }` sub-blocks (see parse12da()'s full_tin notes below).
+  // "points" needs the hex-float decoder; "triangles"/"neighbours" (vertex
+  // indices, 1-based) and "nulling" (a flag per triangle) are plain decimal
+  // ints, same as everywhere else in the format.
+  if (key === "points") {
+    return { key, value: readNumberRow(tokens, pos, 3, parseHexOrDecimalNumber) };
+  }
+  if (key === "triangles" || key === "neighbours") {
+    return { key, value: readNumberRow(tokens, pos, 3) };
+  }
+  if (key === "nulling") {
+    return { key, value: readFlatNumberList(tokens, pos) };
   }
 
   if (TYPED_ATTRIBUTE_TAGS.has(key) && tokens[pos.i]?.type === "STRING") {
@@ -236,13 +291,44 @@ const JUSTIFY_TO_CENTRE_OFFSET = {
  *
  * The returned array also carries a non-enumerable-looking but perfectly
  * normal extra property, `unrecognizedTopLevelKeys` (a `Set<string>`) —
- * every top-level key seen that wasn't `model` or `string` (e.g. a
- * `tin { ... }` block, if a surface/TIN export ever comes through this
- * same format — not yet seen in a real sample, so not parsed). Callers
- * can use this to tell "genuinely empty file" apart from "this file has
- * content, just not a kind we handle yet" — see main-2d.js's design
- * upload for why that distinction matters (silently rendering nothing
- * for a surface file would look like a bug, not an unimplemented format).
+ * every top-level key seen that wasn't `model`, `string`, or `full_tin`.
+ * Callers can use this to tell "genuinely empty file" apart from "this
+ * file has content, just not a kind we handle yet" — see main-2d.js's
+ * design upload for why that distinction matters (silently rendering
+ * nothing for an unsupported block would look like a bug, not an
+ * unimplemented format).
+ *
+ * It also carries `surfaces` — see the `full_tin` notes below — an array
+ * of parsed TIN/surface records, separate from the line-string `records`
+ * array itself (a file can in principle contain both).
+ *
+ * ---
+ *
+ * **`full_tin { ... }` (surfaces/TIN)** — found 2026-08-26 against the
+ * first real surface sample, "FL Surface.12daz" (a 12d "Quick Tin" test
+ * export). Structurally very different from a `string`: a top-level
+ * `full_tin { ... }` block (not a bare statement like `model`) containing
+ * `points { }` (one E N Z per point — see `parseHexOrDecimalNumber` for
+ * why these need their own decoder), `triangles { }` (one 1-based point
+ * -index triple per triangle), `neighbours { }` (adjacent-triangle
+ * indices — not used, kept only so parsing doesn't choke on it), and
+ * `nulling { }` (one flag per triangle, flat list, NOT grouped in 3s).
+ *
+ * **The `nulling` flag's meaning isn't documented anywhere findable — its
+ * use below is inferred from this one sample's actual geometry, not from
+ * a 12d spec.** The sample has 8 points: 4 form a ~4.5km rectangle at flat
+ * RL 0 (12d's automatic "quick tin" bounding box, added because the real
+ * data was too sparse to triangulate alone — a real, well-known 12d
+ * behaviour, not real design data), and 4 cluster tightly at the actual
+ * K2 site with real elevations (RL 6.3-7.5m). Of the 10 triangles, the
+ * exactly 2 built ONLY from the 4 real points have `nulling: 2`; all 8
+ * touching a bounding-rectangle corner have `nulling: 1` — a clean split
+ * that lines up with "1 = auto-bounding scaffold, exclude" / "2 = real
+ * design data, keep". `buildSurfaceFeaturesFrom12d()` in main-2d.js
+ * filters out `nulling === 1` on this basis. **Ask Cameron to confirm**
+ * before trusting this on a second, differently-shaped surface export —
+ * if a future file's nulling values don't split cleanly the same way,
+ * this inference doesn't generalise.
  *
  * @param {string} text - UTF-8 text (already decoded from UTF-16)
  * @returns {Array<{
@@ -251,13 +337,23 @@ const JUSTIFY_TO_CENTRE_OFFSET = {
  *   points: Array<[number, number, number]>,   // raw [E, N, Z] as given
  *   centrelinePoints: Array<[number, number, number]>, // justify-corrected
  *   raw: object
- * }> & { unrecognizedTopLevelKeys: Set<string> }}
+ * }> & {
+ *   unrecognizedTopLevelKeys: Set<string>,
+ *   surfaces: Array<{
+ *     model: string|null, name: string|null, colour: string|null,
+ *     points: Array<[number, number, number]>, // [E, N, Z], 0-based index
+ *     triangles: Array<[number, number, number]>, // 0-based point indices
+ *     nulling: number[], // one flag per triangle, see notes above
+ *     raw: object
+ *   }>
+ * }}
  */
 export function parse12da(text) {
   const tokens = tokenize(text);
   const pos = { i: 0 };
 
   const strings = [];
+  const tins = [];
   const unrecognizedTopLevelKeys = new Set();
   let currentModel = null;
   while (pos.i < tokens.length) {
@@ -266,10 +362,24 @@ export function parse12da(text) {
       currentModel = value; // scalar string
     } else if (key === "string") {
       strings.push({ ...value, __model: currentModel });
+    } else if (key === "full_tin") {
+      tins.push({ ...value, __model: currentModel });
     } else {
       unrecognizedTopLevelKeys.add(key);
     }
   }
+
+  const surfaces = tins.map((t) => ({
+    model: t.__model,
+    name: t.name ?? null,
+    colour: t.colour ?? null,
+    points: t.points ?? [],
+    // File uses 1-based point indices; normalise to 0-based here so
+    // callers can index straight into `points` like everywhere else in JS.
+    triangles: (t.triangles ?? []).map(([a, b, c]) => [a - 1, b - 1, c - 1]),
+    nulling: t.nulling ?? [],
+    raw: t,
+  }));
 
   const records = strings.map((s) => {
     const diameter = s.pipe_value ? Number(s.pipe_value.diameter) : null;
@@ -299,6 +409,7 @@ export function parse12da(text) {
   });
 
   records.unrecognizedTopLevelKeys = unrecognizedTopLevelKeys;
+  records.surfaces = surfaces;
   return records;
 }
 

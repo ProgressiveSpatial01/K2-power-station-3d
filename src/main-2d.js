@@ -113,6 +113,10 @@ const designGroup = createLayerGroup(layerTreeEl, { label: "Design" });
 // to support linework, .ifc, and (eventually) surfaces as different kinds
 // of design data sharing one upload slot, not just IFC.
 const designLineworkGroup = designGroup.addSubgroup({ label: "Linework" });
+// "Surfaces" (added 2026-08-26, first real sample "FL Surface.12daz") —
+// same Design upload slot, a third kind of design data alongside IFC and
+// linework. See buildSurfaceFeaturesFrom12d() below for the file format.
+const designSurfaceGroup = designGroup.addSubgroup({ label: "Surfaces" });
 const servicesGroup = createLayerGroup(layerTreeEl, { label: "Underground Services" });
 
 wireBaseStyleGroup();
@@ -170,6 +174,7 @@ function addCustomLayers() {
   if (state.ifcFeature) addOrUpdateIfcLayer(state.ifcFeature, state.ifcFootprintFeature);
   servicesController.reAddIfPresent();
   designLineworkController.reAddIfPresent();
+  designSurfaceController.reAddIfPresent();
 }
 
 const POINT_SOURCE_ID = "ifc-design-point";
@@ -448,9 +453,19 @@ function buildLineFeaturesFrom12d(records) {
   return { features, skippedShort };
 }
 
+// LineString.coordinates is already a flat [lon,lat] point list (depth 1).
+// Polygon.coordinates (added 2026-08-26, for surface triangles) is one
+// level deeper — an array of rings, each a point list (depth 2) — so it
+// needs exactly one extra level flattened to reach real points, no more
+// (naively flattening everything would shred each [lon,lat] pair itself
+// into loose numbers).
+function pointsOf(geometry) {
+  return geometry.type === "Polygon" ? geometry.coordinates.flat(1) : geometry.coordinates;
+}
+
 function fitMapToFeatures(features) {
   if (features.length === 0) return;
-  const coords = features.flatMap((f) => f.geometry.coordinates);
+  const coords = features.flatMap((f) => pointsOf(f.geometry));
   const bounds = coords.reduce(
     (b, c) => b.extend(c),
     new mapboxgl.LngLatBounds(coords[0], coords[0])
@@ -459,14 +474,149 @@ function fitMapToFeatures(features) {
 }
 
 /**
+ * Controller for a "12d full_tin surface(s), rendered as a triangle mesh"
+ * layer — structurally simpler than createLineFeatureController() since
+ * surfaces don't have a `model` hierarchy worth a nested tree (a real
+ * design usually has a handful of named surfaces, not hundreds of
+ * records); one flat sidebar row per surface name is enough for now,
+ * toggling that surface's triangles via a `surfaceName` filter.
+ */
+function createSurfaceFeatureController({ sourceId, fillLayerId, lineLayerId, group, popupHtml }) {
+  const allFeatures = [];
+  const knownSurfaceNames = new Set();
+  const checkedSurfaces = new Set();
+
+  function applyFilter() {
+    map.setFilter(fillLayerId, ["in", ["get", "surfaceName"], ["literal", [...checkedSurfaces]]]);
+    map.setFilter(lineLayerId, ["in", ["get", "surfaceName"], ["literal", [...checkedSurfaces]]]);
+  }
+
+  function addSidebarRowsIfNeeded(newFeatures) {
+    for (const f of newFeatures) {
+      const name = f.properties.surfaceName;
+      if (knownSurfaceNames.has(name)) continue;
+      knownSurfaceNames.add(name);
+      checkedSurfaces.add(name);
+      group.addRow({
+        label: name,
+        color: f.properties.colour,
+        checked: true,
+        onChange: (checked) => {
+          if (checked) checkedSurfaces.add(name);
+          else checkedSurfaces.delete(name);
+          applyFilter();
+        },
+      });
+    }
+  }
+
+  function createSourceAndLayers(data) {
+    map.addSource(sourceId, { type: "geojson", data });
+    map.addLayer({
+      id: fillLayerId,
+      type: "fill",
+      source: sourceId,
+      paint: { "fill-color": ["get", "colour"], "fill-opacity": 0.45 },
+    });
+    map.addLayer({
+      id: lineLayerId,
+      type: "line",
+      source: sourceId,
+      paint: { "line-color": ["get", "colour"], "line-width": 0.5, "line-opacity": 0.6 },
+    });
+    map.on("click", fillLayerId, (e) => {
+      new mapboxgl.Popup().setLngLat(e.lngLat).setHTML(popupHtml(e.features[0].properties)).addTo(map);
+    });
+  }
+
+  return {
+    addFeatures(newFeatures) {
+      allFeatures.push(...newFeatures);
+      const data = { type: "FeatureCollection", features: allFeatures };
+      if (map.getSource(sourceId)) {
+        map.getSource(sourceId).setData(data);
+      } else {
+        createSourceAndLayers(data);
+      }
+      applyFilter();
+      addSidebarRowsIfNeeded(newFeatures);
+    },
+    reAddIfPresent() {
+      if (allFeatures.length === 0 || map.getSource(sourceId)) return;
+      createSourceAndLayers({ type: "FeatureCollection", features: allFeatures });
+      applyFilter();
+    },
+  };
+}
+
+const designSurfaceController = createSurfaceFeatureController({
+  sourceId: "design-surface",
+  fillLayerId: "design-surface-fill-layer",
+  lineLayerId: "design-surface-line-layer",
+  group: designSurfaceGroup,
+  popupHtml: (p) =>
+    `<b>${p.surfaceName}</b><br>${p.model ?? ""}<br>` +
+    `RL ${p.minZ.toFixed(3)}–${p.maxZ.toFixed(3)} AHD (this triangle)<br>` +
+    `Colour: ${p.rawColour ?? "?"}<br>` +
+    "12d full_tin surface — triangle mesh, not interpolated contours.",
+});
+
+/**
+ * Convert parsed 12d `full_tin` surface records (see twelve-d.js
+ * parse12da() full_tin notes) into per-triangle GeoJSON Polygon features.
+ *
+ * Excludes `nulling === 1` triangles — see twelve-d.js for why (inferred
+ * from this one sample's geometry as "auto-bounding scaffold, not real
+ * design data", not from any 12d spec; ask Cameron before trusting this
+ * on a differently-shaped surface export).
+ */
+function buildSurfaceFeaturesFrom12d(surfaces) {
+  let excludedScaffold = 0;
+  const features = surfaces.flatMap((surf) =>
+    surf.triangles
+      .map((tri, idx) => ({ tri, nulling: surf.nulling[idx] }))
+      .filter(({ nulling }) => {
+        const keep = nulling !== 1;
+        if (!keep) excludedScaffold++;
+        return keep;
+      })
+      .map(({ tri, nulling }) => {
+        const verts = tri.map((i) => surf.points[i]); // 3x [E, N, Z]
+        const ring = verts.map(([e, n]) => mga50ToWgs84([e, n]));
+        ring.push(ring[0]); // close the polygon ring
+        const elevations = verts.map(([, , z]) => z);
+        return {
+          type: "Feature",
+          geometry: { type: "Polygon", coordinates: [ring] },
+          properties: {
+            surfaceName: surf.name ?? "(unnamed surface)",
+            model: surf.model ?? "(unlabelled)",
+            rawColour: surf.colour,
+            // 12d's "shade NN" display setting isn't a real colour (and
+            // isn't in service-colour.js's ACI table — it's a shading
+            // mode, not an AutoCAD Color Index) — a distinct teal default
+            // instead of services' neutral grey, so surfaces are visually
+            // distinguishable from an actually-unrecognised colour.
+            colour: normalizeColour(surf.colour, "#2ee6c8"),
+            nulling,
+            minZ: Math.min(...elevations),
+            maxZ: Math.max(...elevations),
+          },
+        };
+      })
+  );
+  return { features, excludedScaffold };
+}
+
+/**
  * The "Design" upload slot accepts more than one format — per Cameron
  * (2026-08-26): "the design upload probably needs to be able to support
  * linework, .ifc (3d trimesh), and surfaces." Routes by extension to
- * the appropriate handler below. Surfaces (TIN/DTM) are confirmed to
- * also come via .12da/.12daz, but not yet implemented — no real sample
- * to verify the block structure against (see handleDesignLinework()'s
- * handling of records.unrecognizedTopLevelKeys for how that's detected
- * honestly rather than silently rendering nothing).
+ * the appropriate handler below. `.12da`/`.12daz` covers BOTH linework
+ * (`string` records) and surfaces (`full_tin` records, added 2026-08-26
+ * once a real sample — "FL Surface.12daz" — arrived) — a single file
+ * could in principle contain either or both, so handleDesign12dFile()
+ * checks for both kinds of content rather than assuming one.
  */
 function wireDesignInput() {
   const fileInput = document.getElementById("design-input");
@@ -476,7 +626,7 @@ function wireDesignInput() {
     if (/\.ifc$/i.test(file.name)) {
       await handleIfcDesignFile(file);
     } else if (/\.12daz?$/i.test(file.name)) {
-      await handleDesignLinework(file);
+      await handleDesign12dFile(file);
     } else {
       setStatus(`Unrecognised design file type: ${file.name} — expected .ifc, .12da, or .12daz.`);
     }
@@ -642,41 +792,69 @@ async function handleIfcDesignFile(file) {
 }
 
 /**
- * Design linework: reuses the exact same 12d parsing/rendering path as
- * services (buildLineFeaturesFrom12d / createLineFeatureController),
- * just rendered into the Design group instead of Underground Services.
- * See wireDesignInput()'s docstring for the surfaces/TIN caveat.
+ * Design linework AND/OR surfaces: reuses the exact same 12d parsing
+ * pipeline as services for linework (buildLineFeaturesFrom12d /
+ * createLineFeatureController), plus buildSurfaceFeaturesFrom12d /
+ * createSurfaceFeatureController for `full_tin` surfaces — rendered into
+ * the Design group's Linework/Surfaces subgroups instead of Underground
+ * Services. A single file could contain strings, full_tins, both, or (if
+ * it's some other 12d export entirely) neither — each kind is added
+ * independently, only if present.
  */
-async function handleDesignLinework(file) {
+async function handleDesign12dFile(file) {
   setStatus(`Loading ${file.name}…`);
   try {
     const records = await loadTwelveDaFile(file);
-    console.log("[K2-2D] Parsed design linework records:", records);
+    console.log("[K2-2D] Parsed design 12d records:", records);
 
-    if (records.length === 0) {
+    const hasLinework = records.length > 0;
+    const hasSurfaces = records.surfaces.length > 0;
+
+    if (!hasLinework && !hasSurfaces) {
       const unrecognized = [...records.unrecognizedTopLevelKeys].filter((k) => k !== "null");
       if (unrecognized.length > 0) {
         setStatus(
-          `${file.name} has no linework (string) data — found unrecognised block(s): ` +
-            `${unrecognized.join(", ")}. This might be a surface/TIN export, which isn't ` +
-            "supported yet (confirmed 12d .12da/.12daz is the right format, but there's no " +
-            "real sample yet to verify the block structure against — see twelve-d.js). See console."
+          `${file.name} has no linework (string) or surface (full_tin) data — found ` +
+            `unrecognised block(s): ${unrecognized.join(", ")}. See console.`
         );
-        console.warn("[K2-2D] Unrecognised top-level 12d block(s), possibly surface/TIN data:", unrecognized);
+        console.warn("[K2-2D] Unrecognised top-level 12d block(s):", unrecognized);
       } else {
-        setStatus(`${file.name} has no linework (string) data in it — nothing to show.`);
+        setStatus(`${file.name} has no linework or surface data in it — nothing to show.`);
       }
       return;
     }
 
-    const { features, skippedShort } = buildLineFeaturesFrom12d(records);
-    if (skippedShort > 0) {
-      console.warn(`[K2-2D] Skipped ${skippedShort} design linework segment(s) with <2 points.`);
+    const messages = [];
+    let allNewFeatures = [];
+
+    if (hasLinework) {
+      const { features, skippedShort } = buildLineFeaturesFrom12d(records);
+      if (skippedShort > 0) {
+        console.warn(`[K2-2D] Skipped ${skippedShort} design linework segment(s) with <2 points.`);
+      }
+      designLineworkController.addFeatures(features);
+      allNewFeatures = allNewFeatures.concat(features);
+      messages.push(`${records.length} design linework string(s)`);
     }
 
-    designLineworkController.addFeatures(features);
-    fitMapToFeatures(features);
-    setStatus(`Loaded ${file.name}: ${records.length} design linework string(s) on the map.`);
+    if (hasSurfaces) {
+      const { features, excludedScaffold } = buildSurfaceFeaturesFrom12d(records.surfaces);
+      if (excludedScaffold > 0) {
+        console.warn(
+          `[K2-2D] Excluded ${excludedScaffold} triangle(s) inferred as auto-bounding-box ` +
+            "scaffold (nulling===1) — see twelve-d.js full_tin notes. Unconfirmed with Cameron."
+        );
+      }
+      designSurfaceController.addFeatures(features);
+      allNewFeatures = allNewFeatures.concat(features);
+      messages.push(
+        `${records.surfaces.length} surface(s) (${features.length} triangle(s) shown, ` +
+          `${excludedScaffold} excluded as scaffold — unconfirmed, see console)`
+      );
+    }
+
+    fitMapToFeatures(allNewFeatures);
+    setStatus(`Loaded ${file.name}: ${messages.join(" and ")} on the map.`);
   } catch (err) {
     console.error(err);
     setStatus(`Failed to load ${file.name}: ${err.message}`);
