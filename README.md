@@ -44,8 +44,8 @@ terrain).
   collapsible, checkbox-driven groups — **Base Map** (satellite/streets),
   **Design** (the loaded IFC's base point AND a real bounding-box
   footprint outline — see "IFC 2D footprint" below), **Underground
-  Services** (one row per distinct 12d `style` value seen so far, e.g.
-  `POWER_LV`).
+  Services** (a real nested tree matching 12d `model` paths, e.g.
+  Power → High Voltage / Low Voltage — see "Nested model tree" below).
   Unchecking a group actually hides everything in it (not just greys out
   its rows) — see `src/layer-tree.js`. "3D View →" button top-right of
   the sidebar header. A floating toolbar on the map itself (top-left)
@@ -94,6 +94,36 @@ status) when it's back in scope, rather than more remote guessing.
 - **`@mapbox/mapbox-gl-draw` + `@turf/turf`** for measurement and the
   section tool — the same combination CSBP already uses (per the brief)
   for its distance/area tools, reused rather than reinvented.
+
+### Nested model tree (`src/model-tree.js`, `src/layer-tree.js` `addSubgroup()`)
+
+Per Cameron's request (2026-08-26): a real nested tree for Underground
+Services, not the flat "last two path segments" list from before.
+`model-tree.js` compacts real 12d `model` paths (path-like strings,
+e.g. `04 K2 Power Station/Services/Loc/Power/High Voltage`) into a tree
+the way a file explorer does — single-child chains collapse into one
+node, so the long shared prefix most models in one export share doesn't
+turn into several pointless nested folders before reaching anything
+that actually branches. `layer-tree.js` groups can now nest to
+arbitrary depth (`addSubgroup()`), with checkbox toggles cascading
+through every descendant (not just direct children) — unchecking
+"Power" hides both voltage levels beneath it; each leaf still remembers
+its own checked state independently, so re-checking a parent restores
+whatever a child was individually set to rather than force-enabling it.
+
+Verified against the real 800-record file: renders as one branch
+"04 K2 Power Station/Services/Loc" (Sewer, Communications, Drainage,
+Earthing, Fuel Line, Gas, Unknown, a "Power" sub-branch with High/Low
+Voltage, Water) plus one standalone leaf for the odd
+"Services/260812 CG PU Earthing Points" survey model — and cascading
+actually empties/restores the Mapbox filter correctly at both the
+sub-branch and whole-tree level, not just visually.
+
+The tree rebuilds from scratch whenever a genuinely new `model` path
+shows up, rather than patching an existing tree in place — simpler and
+correct, at the cost of resetting any checkboxes the user had unticked.
+Acceptable for now since this only fires once or twice a session in
+practice (one services file load, maybe a second with new models).
 
 ### Measurement & section tools (`src/draw-tools.js`, `src/elevation-profile.js`, `src/profile-chart.js`)
 
