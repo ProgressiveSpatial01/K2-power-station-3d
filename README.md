@@ -40,8 +40,10 @@ terrain).
   300px panel, not an overlay), CSBP-style: an "Add Data" section (file
   pickers for `.ifc` and `.12da`/`.12daz`) and a "Layers" section with
   collapsible, checkbox-driven groups — **Base Map** (satellite/streets),
-  **Design** (the loaded IFC's base point), **Underground Services** (one
-  row per distinct 12d `style` value seen so far, e.g. `POWER_LV`).
+  **Design** (the loaded IFC's base point AND a real bounding-box
+  footprint outline — see "IFC 2D footprint" below), **Underground
+  Services** (one row per distinct 12d `style` value seen so far, e.g.
+  `POWER_LV`).
   Unchecking a group actually hides everything in it (not just greys out
   its rows) — see `src/layer-tree.js`. "3D View →" button top-right of
   the sidebar header. A floating toolbar on the map itself (top-left)
@@ -128,6 +130,52 @@ pixel clone of their branding/icon set.
   otherwise the map's interactivity will be negatively impacted"). Fixed
   with a `#map-wrapper` sibling layout; verified via DOM inspection that
   `#map`'s only children are now Mapbox's own internal elements.
+
+### IFC 2D footprint (`index.html` `#ifc-offscreen`, `ifc.js computeFootprintCornersScene()`)
+
+Originally the 2D page only ever plotted the IFC's project base point —
+a single dot, not its actual extent (Cameron asked "is there any reason
+the IFC model isn't showing up" — this was why). Fixed by loading the
+IFC's real geometry on the 2D page too, via the same
+`@thatopen/components` pipeline the 3D page uses, run headlessly into a
+1x1 offscreen div (`#ifc-offscreen`) — we only need the geometry to
+measure a bounding box, never to display it, so nothing is actually
+rendered there. The result is an axis-aligned bounding-box outline
+(filled + outlined polygon), not a true footprint polygon — exact for a
+rectangular, unrotated design like GT11 (verified: computed footprint
+at the correct location with dimensions matching GT11's known
+21.37 × 7.5 m almost exactly), looser for anything rotated or
+non-rectangular. Worth upgrading to a real convex hull/plan profile if
+that gap matters in practice.
+
+**Two real bugs found and fixed while building this** (not theoretical —
+both reproduced, one confirmed fixed, one not yet re-confirmed, see below):
+
+1. **Large-world-coordinate float32 precision loss.** First attempt
+   positioned the Three.js model directly at its raw MGA coordinates
+   (~384899, ~6434081) on the theory that doing so would make "scene"
+   coordinates just equal true MGA. Wrong in practice — a translation
+   that large blows past float32 precision for the ~10m-scale local
+   geometry sitting on top of it. Caught by checking the actual output:
+   came back near Antarctica instead of Kwinana. Fixed by using the
+   georef's own offset as a small local origin (mirroring `main.js`'s
+   `SCENE_ORIGIN_MGA` pattern, which already did this correctly) and
+   only converting back to real MGA at the very end. **Confirmed fixed**
+   — re-checked the actual output coordinates after the fix.
+2. **`loadIfcFile()`'s `modelId` always defaulted to the fixed string
+   `"design"`.** Loading a second IFC file in the same page session
+   (which happened while testing #1's fix) reused that id without
+   disposing the first model, corrupting the FragmentsManager/scene
+   graph — surfaced as a generic-looking `RangeError: Maximum call stack
+   size exceeded` inside `Box3.setFromObject`'s recursive traversal, not
+   an obviously-IFC-related error. Fixed: `modelId` now defaults to a
+   fresh id per call. **NOT yet re-confirmed live** — hit the render-loop
+   -suspension environment limitation (see "Known issues") right as I
+   went to retest it. The fix is sound by inspection (JS default
+   parameters re-evaluate per call, so uniqueness is guaranteed), but
+   **needs Cameron to confirm**: load two different IFC files (or the
+   same one twice) in one page session and check neither the console nor
+   the map breaks.
 
 ### Deviation from brief: `web-ifc-three` → `@thatopen/components`
 
