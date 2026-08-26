@@ -36,10 +36,15 @@ public token, supplied 2026-08-24 — gitignored, ask him if you don't
 have it) — needed by both pages (the 2D base map, and the 3D scene's
 terrain).
 
-- **`index.html`** (default) — 2D Mapbox map. File pickers for `.ifc`
-  (plots the design's project base point) and `.12da`/`.12daz` (plots
-  services as real GeoJSON lines, reprojected via the same `crs.js` used
-  everywhere else). "3D View →" button in the top-right.
+- **`index.html`** (default) — 2D Mapbox map with a real sidebar (fixed
+  300px panel, not an overlay), CSBP-style: an "Add Data" section (file
+  pickers for `.ifc` and `.12da`/`.12daz`) and a "Layers" section with
+  collapsible, checkbox-driven groups — **Base Map** (satellite/streets),
+  **Design** (the loaded IFC's base point), **Underground Services** (one
+  row per distinct 12d `style` value seen so far, e.g. `POWER_LV`).
+  Unchecking a group actually hides everything in it (not just greys out
+  its rows) — see `src/layer-tree.js`. "3D View →" button top-right of
+  the sidebar header.
 - **`3d.html`** — the original Three.js excavation/clash scene: real
   Mapbox terrain, IFC design loading + georeferencing, 12d services
   extruded into 3D pipes, a test surface above them. "← 2D Map" link
@@ -71,6 +76,24 @@ screenshot at the right moment, or a report directly from Cameron's
 browser devtools (any console errors? does `document.querySelector('#app
 canvas')` exist and have nonzero size? WebGL context lost?) to actually
 pin down. Parked while 2D is the priority, not abandoned.
+
+**Update (2026-08-24), narrows the above considerably**: while testing
+the new sidebar, the 2D Mapbox page *also* got stuck perpetually
+"loading" in my dev/testing environment. Chased it down properly this
+time: a direct probe (`requestAnimationFrame` callbacks — got 0 in 3
+full seconds) plus Chrome's own `ERR_NETWORK_IO_SUSPENDED` network error
+both confirm the sandboxed browser tool I test in fully suspends
+rendering *and* networking whenever it isn't actually displayed on
+screen — a testing-environment limitation, not an app bug, and it
+affects anything render-loop-dependent (Mapbox's tile loading, Three.js's
+render loop). This means the earlier 3D "blank canvas" finding should be
+treated as **inconclusive**, not confirmed — it's quite plausible that
+finding was this same artifact all along, not a real defect. What's
+still solid regardless: no build/module errors, and DOM structure
+(sidebar groups/rows, HUD text) renders correctly — those don't depend
+on the render loop. **Needs a real check in your own browser** (not
+remote-diagnosable further from here) to know whether either page
+actually has a rendering problem or not.
 
 ## Architecture
 
