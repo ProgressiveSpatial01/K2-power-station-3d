@@ -38,6 +38,7 @@ import { createDrawTools } from "./draw-tools.js";
 import { fetchElevationProfile } from "./elevation-profile.js";
 import { renderProfileChart } from "./profile-chart.js";
 import { computeSectionCrossings } from "./section-intersect.js";
+import { createSurfaceCompareControl } from "./surface-compare.js";
 
 const statusEl = document.getElementById("status-bar");
 function setStatus(msg) {
@@ -519,10 +520,11 @@ function fitMapToFeatures(features) {
  * buildSurfaceFeaturesFrom12d() — so every upload gets its own row even
  * if 12d gave the surface itself an identical (or generic) name.
  */
-function createSurfaceFeatureController({ sourceId, fillLayerId, lineLayerId, group, popupHtml }) {
+function createSurfaceFeatureController({ sourceId, fillLayerId, lineLayerId, group, popupHtml, onSurfacesChanged }) {
   const allFeatures = [];
-  const knownSurfaceIds = new Set();
+  const knownSurfaceIds = new Set(); // Sets preserve insertion order — relied on by the compare control's "default to the two most recent" logic
   const checkedSurfaces = new Set();
+  const checkboxes = new Map(); // surfaceId -> its sidebar row's <input>, so setSurfaceVisible() can drive the same checkbox the compare control's dropdowns pick from
 
   function applyFilter() {
     map.setFilter(fillLayerId, ["in", ["get", "surfaceId"], ["literal", [...checkedSurfaces]]]);
@@ -530,12 +532,14 @@ function createSurfaceFeatureController({ sourceId, fillLayerId, lineLayerId, gr
   }
 
   function addSidebarRowsIfNeeded(newFeatures) {
+    let added = false;
     for (const f of newFeatures) {
       const id = f.properties.surfaceId;
       if (knownSurfaceIds.has(id)) continue;
       knownSurfaceIds.add(id);
       checkedSurfaces.add(id);
-      group.addRow({
+      added = true;
+      const input = group.addRow({
         label: id,
         color: f.properties.colour,
         checked: true,
@@ -545,7 +549,9 @@ function createSurfaceFeatureController({ sourceId, fillLayerId, lineLayerId, gr
           applyFilter();
         },
       });
+      checkboxes.set(id, input);
     }
+    if (added) onSurfacesChanged?.([...knownSurfaceIds]);
   }
 
   function createSourceAndLayers(data) {
@@ -588,14 +594,41 @@ function createSurfaceFeatureController({ sourceId, fillLayerId, lineLayerId, gr
     getVisibleFeatures() {
       return allFeatures.filter((f) => checkedSurfaces.has(f.properties.surfaceId));
     },
+    /** For surface-compare.js: every surfaceId seen so far, in load order. */
+    getKnownSurfaceIds() {
+      return [...knownSurfaceIds];
+    },
+    /**
+     * Drives the same visibility state a sidebar checkbox would — used by
+     * surface-compare.js so its A/B toggle and the individual per-surface
+     * checkboxes never disagree about what's actually showing.
+     */
+    setSurfaceVisible(id, visible) {
+      const checkbox = checkboxes.get(id);
+      if (!checkbox) return;
+      checkbox.checked = visible;
+      if (visible) checkedSurfaces.add(id);
+      else checkedSurfaces.delete(id);
+      applyFilter();
+    },
   };
 }
+
+// Rendered above the Surfaces group's own rows; stays hidden until 2+
+// surfaces are loaded (see surface-compare.js). References
+// designSurfaceController inside a closure rather than directly, since
+// it isn't assigned until just after this — never actually called until
+// a user interacts with the dropdowns/buttons, well after both exist.
+const surfaceCompareControl = createSurfaceCompareControl(designSurfaceGroup.body, {
+  setSurfaceVisible: (id, visible) => designSurfaceController.setSurfaceVisible(id, visible),
+});
 
 const designSurfaceController = createSurfaceFeatureController({
   sourceId: "design-surface",
   fillLayerId: "design-surface-fill-layer",
   lineLayerId: "design-surface-line-layer",
   group: designSurfaceGroup,
+  onSurfacesChanged: (ids) => surfaceCompareControl.onSurfacesChanged(ids),
   popupHtml: (p) =>
     `<b>${p.surfaceName}</b> (${p.sourceFile})<br>${p.model ?? ""}<br>` +
     `RL ${p.minZ.toFixed(3)}–${p.maxZ.toFixed(3)} AHD (this triangle)<br>` +

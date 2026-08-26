@@ -638,11 +638,37 @@ under two different names (as if "August_DTM.12daz" and
 confirmed they now produce two distinct, independently toggleable
 surface entries rather than merging into one.
 
-**Not yet built**: an actual compare/diff tool between two loaded
-surfaces (elevation delta, cut/fill volumes) — today's fix only ensures
-multiple surfaces can coexist and be told apart. Real comparison
-tooling is future work once this foundation is confirmed useful — see
-"Open items."
+**Update, same day — simple A/B compare control (`src/surface-compare.js`).**
+Asked Cameron what "compare" should actually do first: a simple toggle/
+swipe between two, an elevation-difference map, or full cut/fill
+volumes — he chose the simple toggle (the other two are real, bigger
+features, deliberately not built yet — see "Open items"). Added a small
+control that appears in the **Design → Surfaces** sidebar group once 2+
+surfaces are loaded: two dropdowns (Surface A / Surface B, defaulting to
+the two most-recently-uploaded — the likeliest "this month vs last
+month" pairing) and a 3-way `[Show A | Both | B]` toggle. Deliberately
+narrow in scope — it only ever touches the two surfaces picked; any
+other loaded surface keeps whatever its own sidebar checkbox says. Drives
+the exact same visibility state as the individual per-surface checkboxes
+(`setSurfaceVisible()`, which updates the real checkbox element too) so
+the two controls can never disagree about what's actually showing.
+
+No elevation math in this at all — it's pure visibility, the "simple
+toggle" end of the spectrum Cameron chose. An actual elevation-difference
+map or cut/fill volume calculation between two surfaces is real,
+meaningfully bigger future work — see "Open items."
+
+**Verified**: `createSurfaceCompareControl()` tested directly (live
+in-browser) against a fake controller recording every `setSurfaceVisible`
+call — confirmed it stays hidden with only 1 surface, appears and
+defaults to "both visible" with 2 (least-surprising default: nothing
+hides the moment the control appears), and that clicking "Show A"/
+"Show B" toggles exactly the two selected surfaces' visibility and
+nothing else. The full `main-2d.js` module (including this control's
+wiring into `createSurfaceFeatureController`) was also re-imported
+directly to confirm no runtime errors — but as with the section-view
+work above, a full on-screen interaction test through the actual sidebar
+wasn't possible this session (suspended render loop).
 
 ### Section view now shows crossing layers (`src/section-intersect.js`) (2026-08-26)
 
@@ -847,11 +873,12 @@ cut view, not a real terrain source. Verified: real sample pipes average
     page starts keeping the actual loaded IFC mesh around (it currently
     only tracks a bounding-box footprint) — flag if this matters enough
     to prioritise.
-11. **Surface compare/diff tooling** — Cameron's stated intended workflow
-    is uploading multiple dated surfaces (e.g. monthly drone flights) to
-    compare (see "surfaces keyed by upload, not internal name"). Multiple
-    surfaces can now coexist and be told apart, but there's no actual
-    comparison feature yet — worth scoping with Cameron what "compare"
-    should mean in practice (a simple two-surface visibility toggle vs. a
-    real elevation-delta/cut-fill-volume calculation, which is a
-    meaningfully bigger feature) before building it.
+11. **Surface elevation-difference / cut-fill volume comparison** —
+    Cameron confirmed the simple A/B visibility toggle (see "simple A/B
+    compare control") as the right first step for comparing dated
+    surfaces (e.g. monthly drone flights); a real elevation-delta map or
+    cut/fill volume calculation between two surfaces is still open,
+    meaningfully bigger future work (needs interpolating one surface's
+    elevation at arbitrary points of another, since two independent
+    drone-flight TINs won't share a triangulation) — revisit once the
+    simple toggle has been used for a while and its limits are clearer.
