@@ -381,14 +381,26 @@ async function extractFirstZipEntry(buf) {
  * moderate gaps throughout — nothing wildly out of line with the rest
  * of that same record. So a gap only counts as a split point if it's
  * BOTH more than `absoluteThresholdM` AND more than `relativeMultiplier`
- * times that record's own MEDIAN gap (using the median, not the mean,
- * so it isn't itself dragged around by the handful of huge jumps it's
- * trying to detect). Re-verified against both failure modes: "COMMS UG
- * PIPE 100" (gaps 5.4-24.9m, median ~16.5m) and "earth ug line" (gaps
- * 1.0-13.2m, median ~3.9m) now correctly stay as one segment each (their
- * largest gap is nowhere near 8x their own median); "power mh" (205
- * points) and "comms manhole" (29 points, tiny ~0.5m clusters split by
- * 16-182m jumps) still correctly split apart.
+ * times the LOCAL median gap (see recursion note below). Re-verified
+ * against both failure modes: "COMMS UG PIPE 100" (gaps 5.4-24.9m,
+ * median ~16.5m) and "earth ug line" (gaps 1.0-13.2m, median ~3.9m) now
+ * correctly stay as one segment each; "power mh" (205 points) and
+ * "comms manhole" (29 points, tiny ~0.5m clusters split by 16-182m
+ * jumps) still correctly split apart.
+ *
+ * *** CORRECTION 2026-08-26, later same day: one global median per
+ * record isn't always enough either ***. Cameron: "still a few rogue
+ * pits joining up" after the fix above. A record with more than one
+ * genuine scale of clustering (e.g. some pits 0.5m apart internally,
+ * others 1m apart, mixed with the real jumps between them) can end up
+ * with a single record-wide median that doesn't cleanly separate every
+ * jump from every cluster's own internal spacing. Fixed by finding and
+ * splitting at the SINGLE WORST outlier gap first, then recursing into
+ * each half with its OWN freshly-computed local median — rather than
+ * measuring every gap against one global baseline in a single pass,
+ * this re-establishes "what's normal here" after every split, so a
+ * record with several different internal scales gets fully resolved
+ * instead of just its single largest jump.
  *
  * @param {Array<[number, number, number]>} points
  * @param {{ absoluteThresholdM?: number, relativeMultiplier?: number }} [opts]
@@ -397,6 +409,10 @@ async function extractFirstZipEntry(buf) {
 export function splitOnGaps(points, opts = {}) {
   const { absoluteThresholdM = 3, relativeMultiplier = 8 } = opts;
   if (points.length === 0) return [];
+  return splitOnWorstOutlier(points, absoluteThresholdM, relativeMultiplier);
+}
+
+function splitOnWorstOutlier(points, absoluteThresholdM, relativeMultiplier) {
   if (points.length <= 2) return [points]; // nothing to compare a single gap's ratio against
 
   const dists = [];
@@ -409,17 +425,18 @@ export function splitOnGaps(points, opts = {}) {
   const mid = Math.floor(sorted.length / 2);
   const median = sorted.length % 2 === 0 ? (sorted[mid - 1] + sorted[mid]) / 2 : sorted[mid];
 
-  const segments = [];
-  let current = [points[0]];
-  for (let i = 0; i < dists.length; i++) {
-    const isSplit = dists[i] > absoluteThresholdM && dists[i] > median * relativeMultiplier;
-    if (isSplit) {
-      segments.push(current);
-      current = [points[i + 1]];
-    } else {
-      current.push(points[i + 1]);
-    }
+  let worstIdx = 0;
+  for (let i = 1; i < dists.length; i++) {
+    if (dists[i] > dists[worstIdx]) worstIdx = i;
   }
-  segments.push(current);
-  return segments;
+
+  const isSplit = dists[worstIdx] > absoluteThresholdM && dists[worstIdx] > median * relativeMultiplier;
+  if (!isSplit) return [points];
+
+  const left = points.slice(0, worstIdx + 1);
+  const right = points.slice(worstIdx + 1);
+  return [
+    ...splitOnWorstOutlier(left, absoluteThresholdM, relativeMultiplier),
+    ...splitOnWorstOutlier(right, absoluteThresholdM, relativeMultiplier),
+  ];
 }
