@@ -665,8 +665,30 @@ const designSurfaceController = createSurfaceFeatureController({
  */
 function buildSurfaceFeaturesFrom12d(surfaces, sourceFileName) {
   let excludedScaffold = 0;
-  const features = surfaces.flatMap((surf) =>
-    surf.triangles
+  const features = surfaces.flatMap((surf) => {
+    // Hoisted out of the per-triangle loop below (2026-08-26, performance
+    // fix): these are the same for every triangle in a surface, but were
+    // being recomputed per-triangle — including normalizeColour(), which
+    // does real work (CSS.supports() + regex matching), not just a cheap
+    // lookup. Measured against a synthetic 500,000-triangle surface (the
+    // 2-triangle "Quick Tin" sample never would have shown this): a real
+    // drone-flight-density surface is exactly the case that makes this
+    // matter, per Cameron's stated monthly-comparison use case.
+    const surfaceName = surf.name ?? "(unnamed surface)";
+    const surfaceId = `${sourceFileName} — ${surfaceName}`;
+    const model = surf.model ?? "(unlabelled)";
+    const normalizedColour = normalizeColour(surf.colour, "#2ee6c8");
+
+    // Also hoisted: project every point ONCE, not once per triangle that
+    // references it. A real mesh's interior vertices are typically shared
+    // by ~6 triangles each — re-running mga50ToWgs84() per occurrence was
+    // ~3-6x more coordinate-transform calls than actually necessary.
+    const pointsWgs84 = surf.points.map(([e, n, z]) => {
+      const [lon, lat] = mga50ToWgs84([e, n]);
+      return [lon, lat, z];
+    });
+
+    return surf.triangles
       .map((tri, idx) => ({ tri, nulling: surf.nulling[idx] }))
       .filter(({ nulling }) => {
         const keep = nulling !== 1;
@@ -674,40 +696,30 @@ function buildSurfaceFeaturesFrom12d(surfaces, sourceFileName) {
         return keep;
       })
       .map(({ tri, nulling }) => {
-        const verts = tri.map((i) => surf.points[i]); // 3x [E, N, Z]
         // Keeps real elevation as each ring point's 3rd coordinate value
         // (Mapbox's fill/line layers ignore it) — section-intersect.js
         // needs it to interpolate the surface's elevation where the cut
         // line crosses this triangle, not just its plan-view outline.
-        const ring = verts.map(([e, n, z]) => {
-          const [lon, lat] = mga50ToWgs84([e, n]);
-          return [lon, lat, z];
-        });
+        const ring = tri.map((i) => pointsWgs84[i]);
         ring.push(ring[0]); // close the polygon ring
-        const elevations = verts.map(([, , z]) => z);
-        const surfaceName = surf.name ?? "(unnamed surface)";
+        const elevations = tri.map((i) => surf.points[i][2]); // fixed length 3 — safe to spread below
         return {
           type: "Feature",
           geometry: { type: "Polygon", coordinates: [ring] },
           properties: {
-            surfaceId: `${sourceFileName} — ${surfaceName}`,
+            surfaceId,
             surfaceName,
             sourceFile: sourceFileName,
-            model: surf.model ?? "(unlabelled)",
+            model,
             rawColour: surf.colour,
-            // 12d's "shade NN" display setting isn't a real colour (and
-            // isn't in service-colour.js's ACI table — it's a shading
-            // mode, not an AutoCAD Color Index) — a distinct teal default
-            // instead of services' neutral grey, so surfaces are visually
-            // distinguishable from an actually-unrecognised colour.
-            colour: normalizeColour(surf.colour, "#2ee6c8"),
+            colour: normalizedColour,
             nulling,
             minZ: Math.min(...elevations),
             maxZ: Math.max(...elevations),
           },
         };
-      })
-  );
+      });
+  });
   return { features, excludedScaffold };
 }
 

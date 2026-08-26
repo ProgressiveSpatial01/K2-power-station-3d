@@ -830,6 +830,25 @@ spread-into-call pattern — the only remaining instances are all fixed-
 size-3 arrays (a triangle's 3 vertices, an `[x,y,z]` position), which
 can't hit this ceiling regardless of how much data is loaded.
 
+**Performance fix, found while stress-testing the above**
+(`buildSurfaceFeaturesFrom12d()`, `main-2d.js`): building that
+500,000-triangle test surface took **5.26 seconds** — slow enough to be
+worth fixing, not just tolerating, for anyone actually loading real
+drone-flight-density surfaces. Root cause: `surfaceId`/`surfaceName`/
+`normalizeColour(surf.colour, ...)` (real work — `CSS.supports()` +
+regex matching, not a cheap lookup) were being recomputed **per
+triangle**, even though they're identical for every triangle in a given
+surface; and `mga50ToWgs84()` was projecting each point **once per
+triangle that references it** rather than once per point — a real
+mesh's interior vertices are typically shared by ~6 triangles each, so
+this was ~3-6x more coordinate transforms than necessary. Hoisted all of
+these out of the per-triangle loop (computed once per surface / once per
+point instead). **Verified**: re-ran the identical 500,000-triangle
+stress test — build time dropped to **0.84 seconds (6.3x faster)**, and
+spot-checked the output is byte-identical to before (same properties,
+same projected ring coordinates) — this is a pure speed fix, not a
+behaviour change.
+
 ### Terrain (`src/terrain.js`) — Mapbox Terrain-RGB REMOVED 2026-08-26, imagery kept
 
 **Cameron: "the mapbox terrain should be removed, it doesn't really do
