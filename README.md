@@ -458,6 +458,57 @@ missing an internal split, and is now correctly `[8,4,4]`).
 Applied to both the 2D map and the 3D scene's `services.js` (same
 underlying bug there too) — the 3D fix hasn't been re-verified live
 given its separate known rendering issue (see "Known issues").
+
+### Design upload broadened to linework + IFC + (surfaces, unimplemented) — `src/main-2d.js`, `src/twelve-d.js`
+
+Same message as the "rogue pits" report, Cameron added: **"the design
+upload probably needs to be able to support linework, .ifc (3d
+trimesh), and surfaces."** Previously the "Design" upload slot
+(`#ifc-input`) only accepted `.ifc`. Broadened to a single
+`#design-input` (`.ifc,.12da,.12daz`) that routes by extension:
+
+- **`.ifc`** → `handleIfcDesignFile()` — the original IFC-loading logic,
+  unchanged, just unwrapped from its inline file-input event listener
+  into a standalone function so it can be called from the new router.
+- **`.12da` / `.12daz` (linework)** → `handleDesignLinework()` — reuses
+  the exact same 12d parsing/gap-splitting/colour pipeline already
+  proven against real data for Underground Services (`splitOnGaps()`,
+  `normalizeColour()`, `buildModelTree()`), rendered into a new
+  **Design → Linework** sidebar subgroup instead of Underground
+  Services. Factored the shared logic (feature-building from parsed
+  records, the nested model-tree sidebar controller, map-fit-to-bounds)
+  out of the old services-only code into `buildLineFeaturesFrom12d()`
+  and a generic `createLineFeatureController({ sourceId, layerId,
+  group, popupHtml })` — Services and Design Linework are now two
+  independent instances of the same controller, not two copies of the
+  same logic.
+- **Surfaces (TIN/DTM)**: Cameron confirmed (via question) these will
+  also be `.12da`/`.12daz`, same as services — but there's no real
+  surface/TIN sample yet to verify the block structure against, so
+  parsing isn't implemented. Rather than silently showing nothing,
+  `parse12da()` now tracks any top-level block key it doesn't
+  recognise (`unrecognizedTopLevelKeys`, e.g. a future `tin { ... }`)
+  and `handleDesignLinework()` surfaces it honestly in the status bar
+  ("might be a surface/TIN export, which isn't supported yet") instead
+  of just saying "no linework data." Needs a real sample before this
+  can go further — see "Open items."
+
+**Verified live** against both real sample files through the actual
+`#design-input` element (dispatched a real `change` event with a real
+`File`, not just a unit test of the parsing logic): loading
+`260826 Service Upload.12daz` produced the same dense, connected
+800-string network as Underground Services (rendered under **Design →
+Linework → 04 K2 Power Station/Services/Loc**, correctly grouped by
+`model` into Sewer/Communications/Drainage/Earthing/Fuel
+Line/Gas/Unknown/Power (High/Low Voltage)/Water), while Underground
+Services' own tree correctly stayed empty ("Nothing loaded yet") —
+confirming the two controller instances don't share state. Then loaded
+`GT11_Foundation_Reference_Model.ifc` through the same input and
+confirmed no regression from unwrapping `handleIfcDesignFile()` out of
+its old event-listener closure: placed at the correct MGA50 base point
+(E384899.031 N6434081.091, GDA2020 MGA Zone 50) with a real
+geometry-derived footprint landing on the actual GT11 site.
+
 - **Scope caveat**: this module only implements what the one sample
   needed (name/style/colour/closed/justify/diameter/data_3d). If a real
   K2 export has richer pipe attributes (material, node IL, grade) not
@@ -611,16 +662,23 @@ cut view, not a real terrain source. Verified: real sample pipes average
 5. Whether the existing K2 drawing-review work (IFC-status setout
    coordinate drawings, mentioned in the brief) has anything else
    reusable here.
-6. **The 0.9m test cover-depth surface is explicitly a placeholder** —
+6. **A real 12d surface/TIN export** (`.12da`/`.12daz`, confirmed by
+   Cameron as the format) — needed to see the actual top-level block
+   structure (e.g. `tin { ... }`) before surface parsing can be
+   implemented in `twelve-d.js`/`main-2d.js`'s design-upload path. Until
+   then, uploading one through "Design" will surface an honest
+   "unrecognised block, might be a surface, not supported yet" message
+   rather than silently doing nothing — see "Design upload broadened."
+7. **The 0.9m test cover-depth surface is explicitly a placeholder** —
    worth confirming with Cameron whether that's a reasonable assumption
    to keep using for further testing, or whether he'd rather it use a
    different default (or per-service-type default) once more services
    are loaded.
-7. **"K2 Plant Grid" transform to GDA2020/MGA50** — see "CRS handling"
+8. **"K2 Plant Grid" transform to GDA2020/MGA50** — see "CRS handling"
    above. Needed before `K2_FW_Combined_ISO_Reference_Model.ifc` (or
    any other plant-grid-authored file) can be placed on the map or in
    the 3D scene at all.
-8. **3D scene blank-render issue** — see "Known issues." A screenshot or
+9. **3D scene blank-render issue** — see "Known issues." A screenshot or
    a devtools report from Cameron's own browser (console errors, canvas
    presence/size, WebGL context status) would help pin this down faster
    than further remote guessing.

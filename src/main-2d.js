@@ -72,16 +72,15 @@ const map = new mapboxgl.Map({
 
 map.addControl(new mapboxgl.NavigationControl(), "bottom-right");
 
-// Last-loaded data, kept so custom sources/layers can be re-added after
+// Last-loaded IFC data, kept so its sources/layers can be re-added after
 // a base style switch (Mapbox GL wipes all custom sources/layers on
-// map.setStyle() — see wireBaseStyleGroup()).
+// map.setStyle() — see wireBaseStyleGroup()). The 12d-derived layers
+// (services, design linework) manage their own equivalent state
+// internally — see createLineFeatureController() below.
 const state = {
   ifcFeature: null,
   ifcFootprintFeature: null,
   ifcRowAdded: false,
-  serviceFeatures: [],
-  knownModelPaths: new Set(), // every distinct `model` path seen so far, across all loads
-  checkedServiceGroups: new Set(), // which of those are currently checked/visible
 };
 
 // Headless @thatopen/components engine, lazily set up on first IFC load
@@ -109,24 +108,28 @@ async function getIfcEngine() {
 const layerTreeEl = document.getElementById("layer-tree");
 const baseGroup = createLayerGroup(layerTreeEl, { label: "Base Map" });
 const designGroup = createLayerGroup(layerTreeEl, { label: "Design" });
+// "Linework" nests inside "Design" (alongside the IFC base point/footprint
+// row added elsewhere) — per Cameron (2026-08-26): the Design upload needs
+// to support linework, .ifc, and (eventually) surfaces as different kinds
+// of design data sharing one upload slot, not just IFC.
+const designLineworkGroup = designGroup.addSubgroup({ label: "Linework" });
 const servicesGroup = createLayerGroup(layerTreeEl, { label: "Underground Services" });
 
 wireBaseStyleGroup();
 
 map.on("load", () => {
-  setStatus("Ready — choose an .ifc design and/or a .12da/.12daz services file.");
+  setStatus("Ready — choose a design (.ifc/.12da/.12daz) and/or a .12da/.12daz services file.");
   addCustomLayers();
-  wireIfcInput();
+  wireDesignInput();
   wireServicesInput();
   wireMapToolbar();
 });
 
 // Base style switches destroy all custom sources/layers; re-add them
-// (from `state`) once the new style has finished loading.
+// once the new style has finished loading. Each re-add is a cheap no-op
+// if that layer has nothing loaded yet.
 map.on("style.load", () => {
-  if (state.ifcFeature || state.serviceFeatures.length > 0) {
-    addCustomLayers();
-  }
+  addCustomLayers();
 });
 
 map.on("error", (e) => {
@@ -162,10 +165,11 @@ function wireBaseStyleGroup() {
   baseGroup.groupCheckbox.title = "Base map is always visible";
 }
 
-/** Re-add every custom source/layer currently held in `state`. Safe to call repeatedly. */
+/** Re-add every custom source/layer currently loaded. Safe to call repeatedly. */
 function addCustomLayers() {
   if (state.ifcFeature) addOrUpdateIfcLayer(state.ifcFeature, state.ifcFootprintFeature);
-  if (state.serviceFeatures.length > 0) addOrUpdateServicesLayer(state.serviceFeatures);
+  servicesController.reAddIfPresent();
+  designLineworkController.reAddIfPresent();
 }
 
 const POINT_SOURCE_ID = "ifc-design-point";
@@ -272,14 +276,78 @@ function addOrUpdateIfcLayer(pointFeature, footprintFeature) {
   }
 }
 
-function addOrUpdateServicesLayer(features) {
-  const sourceId = "services-12d";
-  const layerId = "services-12d-layer";
-  const data = { type: "FeatureCollection", features };
+/**
+ * Generic controller for a "many 12d line-string records, grouped by
+ * `model` into a nested sidebar tree" layer. Used for BOTH Underground
+ * Services and Design linework (added 2026-08-26 per Cameron: the
+ * Design upload needs to support linework too, not just IFC) — the two
+ * are structurally identical (parsed the same way via twelve-d.js,
+ * grouped the same way via model-tree.js) and only differ in which
+ * Mapbox source/sidebar group they render into and their popup content.
+ * Factored out here rather than duplicating the logic a second time.
+ *
+ * Owns its own accumulated feature list and model-grouping state
+ * internally (not the shared `state` object above) so multiple
+ * instances don't collide.
+ *
+ * Grouping by `model`, not `style`: found 2026-08-26 against a real
+ * 800-record weekly export that `style` is nearly useless for grouping
+ * there (734/800 records just have style "1"), while `model` gives real
+ * discipline categories (Sewer, Water, Power/High Voltage, Power/Low
+ * Voltage, Drainage, ...) — see twelve-d.js parse12da() for how model
+ * tracking works.
+ *
+ * Tree rebuilds from scratch (not patched in place) whenever a
+ * genuinely new model path shows up — inserting into an already-
+ * rendered compacted tree while keeping its structure correct is real
+ * work; a full rebuild from the accumulated model set is simple and
+ * correct instead. Trade-off: any checkboxes the user had unticked get
+ * reset to "all checked" on a rebuild. Acceptable for now — in practice
+ * this fires once or twice a session, not continuously.
+ */
+function createLineFeatureController({ sourceId, layerId, group, popupHtml }) {
+  const allFeatures = [];
+  const knownModelPaths = new Set();
+  const checkedGroups = new Set();
 
-  if (map.getSource(sourceId)) {
-    map.getSource(sourceId).setData(data);
-  } else {
+  function applyFilter() {
+    map.setFilter(layerId, ["in", ["get", "model"], ["literal", [...checkedGroups]]]);
+  }
+
+  function renderTree(g, nodes) {
+    for (const node of nodes) {
+      if (node.type === "leaf") {
+        g.addRow({
+          label: node.label,
+          color: "#2fa3ff",
+          checked: checkedGroups.has(node.fullPath),
+          onChange: (checked) => {
+            if (checked) checkedGroups.add(node.fullPath);
+            else checkedGroups.delete(node.fullPath);
+            applyFilter();
+          },
+        });
+      } else {
+        const sub = g.addSubgroup({ label: node.label });
+        renderTree(sub, node.children);
+      }
+    }
+  }
+
+  function rebuildTreeIfNeeded(newFeatures) {
+    const modelsInThisLoad = new Set(newFeatures.map((f) => f.properties.model));
+    const hasNewModel = [...modelsInThisLoad].some((m) => !knownModelPaths.has(m));
+    if (!hasNewModel) return;
+
+    for (const m of modelsInThisLoad) knownModelPaths.add(m);
+    checkedGroups.clear();
+    for (const m of knownModelPaths) checkedGroups.add(m); // default: everything checked
+
+    group.clear();
+    renderTree(group, buildModelTree([...knownModelPaths]));
+  }
+
+  function createSourceAndLayer(data) {
     map.addSource(sourceId, { type: "geojson", data });
     map.addLayer({
       id: layerId,
@@ -295,91 +363,130 @@ function addOrUpdateServicesLayer(features) {
       paint: { "line-color": ["get", "colour"], "line-width": 3 },
     });
     map.on("click", layerId, (e) => {
-      const p = e.features[0].properties;
-      new mapboxgl.Popup()
-        .setLngLat(e.lngLat)
-        .setHTML(
-          `<b>${p.name ?? "Service"}</b><br>${p.model ?? ""} (style ${p.style ?? "?"})<br>` +
-            `Diameter: ${p.diameter ?? "?"} m, justify: ${p.justify ?? "?"}<br>` +
-            `Colour: ${p.rawColour ?? "?"}<br>` +
-            `Depth: surveyed (12d) — see 3D view for actual elevation.`
-        )
-        .addTo(map);
+      new mapboxgl.Popup().setLngLat(e.lngLat).setHTML(popupHtml(e.features[0].properties)).addTo(map);
     });
   }
 
-  applyServicesFilter(layerId);
-  rebuildServicesTreeIfNeeded(features, layerId);
+  return {
+    addFeatures(newFeatures) {
+      allFeatures.push(...newFeatures);
+      const data = { type: "FeatureCollection", features: allFeatures };
+      if (map.getSource(sourceId)) {
+        map.getSource(sourceId).setData(data);
+      } else {
+        createSourceAndLayer(data);
+      }
+      applyFilter();
+      rebuildTreeIfNeeded(newFeatures);
+    },
+    /** Re-create the source/layer after a base-style switch wiped it. No-op if nothing's loaded yet. */
+    reAddIfPresent() {
+      if (allFeatures.length === 0 || map.getSource(sourceId)) return;
+      createSourceAndLayer({ type: "FeatureCollection", features: allFeatures });
+      applyFilter();
+    },
+  };
+}
+
+const servicesController = createLineFeatureController({
+  sourceId: "services-12d",
+  layerId: "services-12d-layer",
+  group: servicesGroup,
+  popupHtml: (p) =>
+    `<b>${p.name ?? "Service"}</b><br>${p.model ?? ""} (style ${p.style ?? "?"})<br>` +
+    `Diameter: ${p.diameter ?? "?"} m, justify: ${p.justify ?? "?"}<br>` +
+    `Colour: ${p.rawColour ?? "?"}<br>` +
+    `Depth: surveyed (12d) — see 3D view for actual elevation.`,
+});
+
+const designLineworkController = createLineFeatureController({
+  sourceId: "design-linework",
+  layerId: "design-linework-layer",
+  group: designLineworkGroup,
+  popupHtml: (p) =>
+    `<b>${p.name ?? "Design line"}</b><br>${p.model ?? ""} (style ${p.style ?? "?"})<br>` +
+    `Colour: ${p.rawColour ?? "?"}<br>` +
+    "Design linework (12d) — not a service.",
+});
+
+/**
+ * Parse 12d records into map-ready line features — shared by both
+ * services and design linework (see createLineFeatureController()
+ * above for why they're structurally identical). Splits on gaps
+ * (twelve-d.js splitOnGaps() — see its header for why a flat distance
+ * threshold doesn't work) and filters out anything left with <2 points
+ * (point/symbol data, or an isolated point after splitting).
+ */
+function buildLineFeaturesFrom12d(records) {
+  let skippedShort = 0;
+  const features = records.flatMap((r) => {
+    const segments = splitOnGaps(r.centrelinePoints);
+    return segments
+      .filter((seg) => {
+        const ok = seg.length >= 2;
+        if (!ok) skippedShort++;
+        return ok;
+      })
+      .map((seg) => ({
+        type: "Feature",
+        geometry: {
+          type: "LineString",
+          coordinates: seg.map(([e, n]) => mga50ToWgs84([e, n])),
+        },
+        properties: {
+          name: r.name,
+          model: r.model ?? "(unlabelled)",
+          style: r.style ?? "(no style)",
+          diameter: r.diameter,
+          justify: r.justify,
+          depthAccuracy: "surveyed",
+          rawColour: r.colour,
+          colour: normalizeColour(r.colour),
+        },
+      }));
+  });
+  return { features, skippedShort };
+}
+
+function fitMapToFeatures(features) {
+  if (features.length === 0) return;
+  const coords = features.flatMap((f) => f.geometry.coordinates);
+  const bounds = coords.reduce(
+    (b, c) => b.extend(c),
+    new mapboxgl.LngLatBounds(coords[0], coords[0])
+  );
+  map.fitBounds(bounds, { padding: 80, maxZoom: 19 });
 }
 
 /**
- * Rebuild the "Underground Services" nested tree (see model-tree.js —
- * real 12d `model` paths like "04 K2 Power Station/Services/Loc/Power/
- * High Voltage" compact into an actual sub-grouped tree, not a flat
- * list) whenever a genuinely new model path shows up that isn't already
- * represented. Rebuilds from scratch rather than patching an existing
- * tree in place — inserting into an already-rendered compacted tree
- * while keeping its structure correct is real work; a full rebuild from
- * the accumulated model set is simple and correct instead. Trade-off:
- * any checkboxes the user had unticked get reset to "all checked" on a
- * rebuild. Acceptable for now — in practice this fires once or twice a
- * session (one services file load, maybe a second with new models),
- * not continuously.
- *
- * Grouping by `model`, not `style`: found 2026-08-26 against a real
- * 800-record weekly export that `style` is nearly useless for grouping
- * there (734/800 records just have style "1"), while `model` gives real
- * discipline categories (Sewer, Water, Power/High Voltage, Power/Low
- * Voltage, Drainage, ...) — see twelve-d.js parse12da() for how model
- * tracking works.
+ * The "Design" upload slot accepts more than one format — per Cameron
+ * (2026-08-26): "the design upload probably needs to be able to support
+ * linework, .ifc (3d trimesh), and surfaces." Routes by extension to
+ * the appropriate handler below. Surfaces (TIN/DTM) are confirmed to
+ * also come via .12da/.12daz, but not yet implemented — no real sample
+ * to verify the block structure against (see handleDesignLinework()'s
+ * handling of records.unrecognizedTopLevelKeys for how that's detected
+ * honestly rather than silently rendering nothing).
  */
-function rebuildServicesTreeIfNeeded(features, layerId) {
-  const modelsInThisLoad = new Set(features.map((f) => f.properties.model));
-  const hasNewModel = [...modelsInThisLoad].some((m) => !state.knownModelPaths.has(m));
-  if (!hasNewModel) return;
-
-  for (const m of modelsInThisLoad) state.knownModelPaths.add(m);
-  state.checkedServiceGroups = new Set(state.knownModelPaths); // default: everything checked
-
-  servicesGroup.clear();
-  const tree = buildModelTree([...state.knownModelPaths]);
-  renderModelTree(servicesGroup, tree, layerId);
-}
-
-/** Recursively render a model-tree.js tree into a layer-tree.js group. */
-function renderModelTree(group, nodes, layerId) {
-  for (const node of nodes) {
-    if (node.type === "leaf") {
-      group.addRow({
-        label: node.label,
-        color: "#2fa3ff",
-        checked: state.checkedServiceGroups.has(node.fullPath),
-        onChange: (checked) => {
-          if (checked) state.checkedServiceGroups.add(node.fullPath);
-          else state.checkedServiceGroups.delete(node.fullPath);
-          applyServicesFilter(layerId);
-        },
-      });
-    } else {
-      const sub = group.addSubgroup({ label: node.label });
-      renderModelTree(sub, node.children, layerId);
-    }
-  }
-}
-
-function applyServicesFilter(layerId) {
-  const checked = [...state.checkedServiceGroups];
-  map.setFilter(layerId, ["in", ["get", "model"], ["literal", checked]]);
-}
-
-function wireIfcInput() {
-  const fileInput = document.getElementById("ifc-input");
+function wireDesignInput() {
+  const fileInput = document.getElementById("design-input");
   fileInput.addEventListener("change", async (e) => {
     const file = e.target.files?.[0];
     if (!file) return;
-    setStatus(`Reading ${file.name}…`);
-    try {
-      const buffer = new Uint8Array(await file.arrayBuffer());
+    if (/\.ifc$/i.test(file.name)) {
+      await handleIfcDesignFile(file);
+    } else if (/\.12daz?$/i.test(file.name)) {
+      await handleDesignLinework(file);
+    } else {
+      setStatus(`Unrecognised design file type: ${file.name} — expected .ifc, .12da, or .12daz.`);
+    }
+  });
+}
+
+async function handleIfcDesignFile(file) {
+  setStatus(`Reading ${file.name}…`);
+  try {
+    const buffer = new Uint8Array(await file.arrayBuffer());
       const georef = extractGeoreference(buffer);
 
       if (georef && !georef.isKnownMga50) {
@@ -528,11 +635,52 @@ function wireIfcInput() {
           );
         }
       }
-    } catch (err) {
-      console.error(err);
-      setStatus(`Failed to read ${file.name}: ${err.message}`);
+  } catch (err) {
+    console.error(err);
+    setStatus(`Failed to read ${file.name}: ${err.message}`);
+  }
+}
+
+/**
+ * Design linework: reuses the exact same 12d parsing/rendering path as
+ * services (buildLineFeaturesFrom12d / createLineFeatureController),
+ * just rendered into the Design group instead of Underground Services.
+ * See wireDesignInput()'s docstring for the surfaces/TIN caveat.
+ */
+async function handleDesignLinework(file) {
+  setStatus(`Loading ${file.name}…`);
+  try {
+    const records = await loadTwelveDaFile(file);
+    console.log("[K2-2D] Parsed design linework records:", records);
+
+    if (records.length === 0) {
+      const unrecognized = [...records.unrecognizedTopLevelKeys].filter((k) => k !== "null");
+      if (unrecognized.length > 0) {
+        setStatus(
+          `${file.name} has no linework (string) data — found unrecognised block(s): ` +
+            `${unrecognized.join(", ")}. This might be a surface/TIN export, which isn't ` +
+            "supported yet (confirmed 12d .12da/.12daz is the right format, but there's no " +
+            "real sample yet to verify the block structure against — see twelve-d.js). See console."
+        );
+        console.warn("[K2-2D] Unrecognised top-level 12d block(s), possibly surface/TIN data:", unrecognized);
+      } else {
+        setStatus(`${file.name} has no linework (string) data in it — nothing to show.`);
+      }
+      return;
     }
-  });
+
+    const { features, skippedShort } = buildLineFeaturesFrom12d(records);
+    if (skippedShort > 0) {
+      console.warn(`[K2-2D] Skipped ${skippedShort} design linework segment(s) with <2 points.`);
+    }
+
+    designLineworkController.addFeatures(features);
+    fitMapToFeatures(features);
+    setStatus(`Loaded ${file.name}: ${records.length} design linework string(s) on the map.`);
+  } catch (err) {
+    console.error(err);
+    setStatus(`Failed to load ${file.name}: ${err.message}`);
+  }
 }
 
 function wireServicesInput() {
@@ -547,47 +695,13 @@ function wireServicesInput() {
 
       // Some real exports include point/symbol features (data_2d, no
       // data_3d — e.g. SDR survey pickups, symbol placements) alongside
-      // line strings. A GeoJSON LineString needs >=2 coordinates; found
-      // this the hard way against a real 800-record weekly export that
-      // included some of these. Skip them for the line layer rather than
-      // feeding Mapbox invalid geometry — they're not services with a
-      // depth/diameter to extrude/plot as a line anyway.
-      //
-      // Also split each record on large coordinate gaps (splitOnGaps,
-      // twelve-d.js) before building features: some real records bundle
-      // several physically separate features (e.g. multiple distinct
-      // manhole rim outlines) into one `data_3d` array with no marker
-      // between them — reported by Cameron as "pits seem to be joining
-      // up." Un-split, that draws long spurious lines connecting
-      // unrelated pits. One 12d record can therefore become several
-      // map features.
-      let skippedShort = 0;
-      const features = records.flatMap((r) => {
-        const segments = splitOnGaps(r.centrelinePoints);
-        return segments
-          .filter((seg) => {
-            const ok = seg.length >= 2;
-            if (!ok) skippedShort++;
-            return ok;
-          })
-          .map((seg) => ({
-            type: "Feature",
-            geometry: {
-              type: "LineString",
-              coordinates: seg.map(([e, n]) => mga50ToWgs84([e, n])),
-            },
-            properties: {
-              name: r.name,
-              model: r.model ?? "(unlabelled)",
-              style: r.style ?? "(no style)",
-              diameter: r.diameter,
-              justify: r.justify,
-              depthAccuracy: "surveyed",
-              rawColour: r.colour,
-              colour: normalizeColour(r.colour),
-            },
-          }));
-      });
+      // line strings, and some records bundle several physically
+      // separate features (e.g. multiple distinct manhole rim outlines)
+      // into one `data_3d` array with no marker between them — see
+      // buildLineFeaturesFrom12d() / twelve-d.js splitOnGaps() for how
+      // both are handled (found against a real 800-record weekly
+      // export; reported by Cameron as "pits seem to be joining up").
+      const { features, skippedShort } = buildLineFeaturesFrom12d(records);
       if (skippedShort > 0) {
         console.warn(
           `[K2-2D] Skipped ${skippedShort} segment(s) with <2 points (point/symbol data, or an ` +
@@ -595,18 +709,8 @@ function wireServicesInput() {
         );
       }
 
-      state.serviceFeatures = state.serviceFeatures.concat(features);
-      addOrUpdateServicesLayer(state.serviceFeatures);
-
-      if (features.length > 0) {
-        const coords = features.flatMap((f) => f.geometry.coordinates);
-        const bounds = coords.reduce(
-          (b, c) => b.extend(c),
-          new mapboxgl.LngLatBounds(coords[0], coords[0])
-        );
-        map.fitBounds(bounds, { padding: 80, maxZoom: 19 });
-      }
-
+      servicesController.addFeatures(features);
+      fitMapToFeatures(features);
       setStatus(`Loaded ${file.name}: ${records.length} service string(s) on the map.`);
     } catch (err) {
       console.error(err);

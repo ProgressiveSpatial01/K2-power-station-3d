@@ -234,6 +234,16 @@ const JUSTIFY_TO_CENTRE_OFFSET = {
  * Line, Unknown). Both are exposed; callers grouping the sidebar should
  * prefer `model` over `style` where present.
  *
+ * The returned array also carries a non-enumerable-looking but perfectly
+ * normal extra property, `unrecognizedTopLevelKeys` (a `Set<string>`) —
+ * every top-level key seen that wasn't `model` or `string` (e.g. a
+ * `tin { ... }` block, if a surface/TIN export ever comes through this
+ * same format — not yet seen in a real sample, so not parsed). Callers
+ * can use this to tell "genuinely empty file" apart from "this file has
+ * content, just not a kind we handle yet" — see main-2d.js's design
+ * upload for why that distinction matters (silently rendering nothing
+ * for a surface file would look like a bug, not an unimplemented format).
+ *
  * @param {string} text - UTF-8 text (already decoded from UTF-16)
  * @returns {Array<{
  *   model: string|null, name: string, style: string|null, colour: string|null,
@@ -241,13 +251,14 @@ const JUSTIFY_TO_CENTRE_OFFSET = {
  *   points: Array<[number, number, number]>,   // raw [E, N, Z] as given
  *   centrelinePoints: Array<[number, number, number]>, // justify-corrected
  *   raw: object
- * }>}
+ * }> & { unrecognizedTopLevelKeys: Set<string> }}
  */
 export function parse12da(text) {
   const tokens = tokenize(text);
   const pos = { i: 0 };
 
   const strings = [];
+  const unrecognizedTopLevelKeys = new Set();
   let currentModel = null;
   while (pos.i < tokens.length) {
     const { key, value } = parseStatement(tokens, pos);
@@ -255,12 +266,12 @@ export function parse12da(text) {
       currentModel = value; // scalar string
     } else if (key === "string") {
       strings.push({ ...value, __model: currentModel });
+    } else {
+      unrecognizedTopLevelKeys.add(key);
     }
-    // Any other top-level key (none seen in real exports so far) is
-    // silently ignored rather than guessed at.
   }
 
-  return strings.map((s) => {
+  const records = strings.map((s) => {
     const diameter = s.pipe_value ? Number(s.pipe_value.diameter) : null;
     const justify = s.justify ?? null;
     const points = (s.data_3d ?? []).map(([e, n, z]) => [e, n, z]);
@@ -286,6 +297,9 @@ export function parse12da(text) {
       raw: s,
     };
   });
+
+  records.unrecognizedTopLevelKeys = unrecognizedTopLevelKeys;
+  return records;
 }
 
 // --- File loading (.12da direct, .12daz zipped) --------------------------
