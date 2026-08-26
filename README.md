@@ -803,6 +803,33 @@ assumed), then re-ran `renderProfileChart()` with a synthetic 100,000-
 point surface chord and 50,000 line crossings — built the chart
 correctly with no error.
 
+**Same bug, found again — Cameron: "same error."** The fix above wasn't
+the only spread of its kind: `createLineFeatureController()` and
+`createSurfaceFeatureController()` (`main-2d.js`) both accumulated newly-
+loaded features with `allFeatures.push(...newFeatures)` — the exact same
+argument-count-ceiling problem, just one step earlier in the pipeline
+(at upload time, accumulating ALL of a surface's triangle features into
+one array) rather than at chart-build time. For a real dense drone-
+flight surface (many thousands of triangles in one upload) this is
+actually the MORE likely place to hit the ceiling than the chart itself.
+Fixed the same way — a plain `for...of` loop instead of a spread.
+
+**Verified with a stress test closer to a genuine dense drone-flight
+TIN than any prior sample**: built a synthetic 500,000-triangle surface
+(a 500×500 vertex grid, not the 2-triangle "Quick Tin" file every
+earlier check used) and ran it through the ENTIRE real pipeline —
+`buildSurfaceFeaturesFrom12d()`-equivalent feature building, the fixed
+accumulation loop, `computeSectionCrossings()`, and `renderProfileChart()`
+— with a section line cut straight across the whole grid. All four
+stages completed with no error (feature build ~5.3s — noticeably slow at
+this size, a possible future optimisation target if real surfaces turn
+out this dense, but not a crash; accumulation ~6ms; crossings ~91ms;
+chart ~5ms), correctly finding 1,000 real triangle crossings along the
+cut. Also swept the rest of the codebase for the same `...arrayVariable)`
+spread-into-call pattern — the only remaining instances are all fixed-
+size-3 arrays (a triangle's 3 vertices, an `[x,y,z]` position), which
+can't hit this ceiling regardless of how much data is loaded.
+
 ### Terrain (`src/terrain.js`) — Mapbox Terrain-RGB REMOVED 2026-08-26, imagery kept
 
 **Cameron: "the mapbox terrain should be removed, it doesn't really do

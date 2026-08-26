@@ -375,7 +375,12 @@ function createLineFeatureController({ sourceId, layerId, group, popupHtml }) {
 
   return {
     addFeatures(newFeatures) {
-      allFeatures.push(...newFeatures);
+      // NOT allFeatures.push(...newFeatures) — spreading into a function
+      // call has an engine-specific argument-count ceiling; a real,
+      // large-enough upload (see the same bug just fixed in
+      // profile-chart.js) would throw "Maximum call stack size exceeded"
+      // here instead of loading. A plain loop has no such limit.
+      for (const f of newFeatures) allFeatures.push(f);
       const data = { type: "FeatureCollection", features: allFeatures };
       if (map.getSource(sourceId)) {
         map.getSource(sourceId).setData(data);
@@ -574,7 +579,13 @@ function createSurfaceFeatureController({ sourceId, fillLayerId, lineLayerId, gr
 
   return {
     addFeatures(newFeatures) {
-      allFeatures.push(...newFeatures);
+      // NOT allFeatures.push(...newFeatures) — see createLineFeatureController's
+      // identical fix above. A real drone-flight-density surface (thousands
+      // of triangle features per upload) can exceed the spread-argument
+      // ceiling here specifically — this is likely THE actual crash site
+      // for a real dense surface upload, more so than the line-feature
+      // controller above (which only ever sees hundreds of segments).
+      for (const f of newFeatures) allFeatures.push(f);
       const data = { type: "FeatureCollection", features: allFeatures };
       if (map.getSource(sourceId)) {
         map.getSource(sourceId).setData(data);
