@@ -345,8 +345,9 @@ async function extractFirstZipEntry(buf) {
 // --- Gap splitting (2026-08-26) --------------------------------------
 
 /**
- * Split a polyline's points into multiple sub-polylines wherever
- * consecutive points are further apart than `thresholdM`.
+ * Split a polyline's points into multiple sub-polylines wherever a
+ * consecutive gap is both absolutely large AND dramatically larger than
+ * that record's own typical vertex spacing.
  *
  * Needed because a real 800-record weekly export bundles multiple
  * physically separate features into ONE `string` record's `data_3d`,
@@ -358,31 +359,65 @@ async function extractFirstZipEntry(buf) {
  * spurious lines connecting unrelated manholes — reported by Cameron as
  * "pits seem to be joining up."
  *
- * The threshold isn't a fragile guess at an arbitrary cutoff: measured
- * against the real file, every observed within-cluster gap was <1m and
- * every between-cluster gap was >17m, with nothing in between — so 3m
- * sits safely in a wide empirically-observed gap, for this file at
- * least. Records that are genuinely one continuous alignment (also seen
- * in the same file: several 135-137 point records) have zero gaps over
- * 3m and correctly come back as a single segment, unsplit.
+ * *** CORRECTION 2026-08-26: a flat distance threshold does NOT work ***
+ * The first version of this function split on ANY gap over 3m,
+ * validated only against the giant concatenated-pit records. Cameron
+ * then compared the 3D scene against the same file opened in real 12d
+ * and found a dense, continuous network there vs. scattered fragments
+ * in ours — a real regression, not a framing/zoom difference. Re-checked
+ * against ordinary pipe/cable records ("COMMS UG PIPE 100", "earth ug
+ * line") and found their NORMAL, legitimate vertex-to-vertex spacing is
+ * 3-25m — well past the 3m threshold, so real continuous alignments were
+ * being shattered into isolated single points and vanishing entirely.
+ * Worse, the two cases genuinely overlap in absolute terms: one
+ * concatenated-manhole record's smallest between-cluster jump (16.2m)
+ * is SMALLER than one legitimate single alignment's largest real gap
+ * (17.4m) — no fixed distance cutoff can separate them.
+ *
+ * What actually distinguishes the two cases is RELATIVE, not absolute:
+ * a concatenated-pits record has many tiny gaps (<1m, one pit's own rim)
+ * and a few huge jumps (tens-to-hundreds of metres) to the next pit —
+ * an extreme ratio. A genuine pipe alignment has fairly uniform,
+ * moderate gaps throughout — nothing wildly out of line with the rest
+ * of that same record. So a gap only counts as a split point if it's
+ * BOTH more than `absoluteThresholdM` AND more than `relativeMultiplier`
+ * times that record's own MEDIAN gap (using the median, not the mean,
+ * so it isn't itself dragged around by the handful of huge jumps it's
+ * trying to detect). Re-verified against both failure modes: "COMMS UG
+ * PIPE 100" (gaps 5.4-24.9m, median ~16.5m) and "earth ug line" (gaps
+ * 1.0-13.2m, median ~3.9m) now correctly stay as one segment each (their
+ * largest gap is nowhere near 8x their own median); "power mh" (205
+ * points) and "comms manhole" (29 points, tiny ~0.5m clusters split by
+ * 16-182m jumps) still correctly split apart.
  *
  * @param {Array<[number, number, number]>} points
- * @param {number} thresholdM
+ * @param {{ absoluteThresholdM?: number, relativeMultiplier?: number }} [opts]
  * @returns {Array<Array<[number, number, number]>>} one or more segments
  */
-export function splitOnGaps(points, thresholdM = 3) {
+export function splitOnGaps(points, opts = {}) {
+  const { absoluteThresholdM = 3, relativeMultiplier = 8 } = opts;
   if (points.length === 0) return [];
-  const segments = [];
-  let current = [points[0]];
+  if (points.length <= 2) return [points]; // nothing to compare a single gap's ratio against
+
+  const dists = [];
   for (let i = 1; i < points.length; i++) {
     const [x1, y1] = points[i - 1];
     const [x2, y2] = points[i];
-    const dist = Math.hypot(x2 - x1, y2 - y1);
-    if (dist > thresholdM) {
+    dists.push(Math.hypot(x2 - x1, y2 - y1));
+  }
+  const sorted = [...dists].sort((a, b) => a - b);
+  const mid = Math.floor(sorted.length / 2);
+  const median = sorted.length % 2 === 0 ? (sorted[mid - 1] + sorted[mid]) / 2 : sorted[mid];
+
+  const segments = [];
+  let current = [points[0]];
+  for (let i = 0; i < dists.length; i++) {
+    const isSplit = dists[i] > absoluteThresholdM && dists[i] > median * relativeMultiplier;
+    if (isSplit) {
       segments.push(current);
-      current = [points[i]];
+      current = [points[i + 1]];
     } else {
-      current.push(points[i]);
+      current.push(points[i + 1]);
     }
   }
   segments.push(current);
