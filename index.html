@@ -5,39 +5,97 @@
     <meta name="viewport" content="width=device-width, initial-scale=1.0" />
     <title>K2 — 2D Site Map</title>
     <style>
-      html, body { margin: 0; height: 100%; background: #1a1a1a; }
-      #map { position: absolute; inset: 0; }
-      #hud {
-        position: absolute; top: 8px; left: 8px; z-index: 10;
-        font: 12px/1.5 system-ui, sans-serif; color: #eee;
-        background: rgba(0,0,0,0.7); padding: 10px 12px; border-radius: 6px;
-        max-width: 340px;
+      html, body { margin: 0; height: 100%; background: #1a1a1a; font: 13px/1.4 system-ui, sans-serif; }
+      #layout { display: flex; height: 100%; }
+
+      #sidebar {
+        flex: 0 0 300px;
+        width: 300px;
+        background: #202225;
+        color: #e6e6e6;
+        display: flex;
+        flex-direction: column;
+        border-right: 1px solid #333;
+        overflow: hidden;
       }
-      #hud b { color: #ffb454; }
-      #hud label { display: block; margin-top: 8px; font-size: 11px; color: #bbb; }
-      #hud input[type="file"] { margin-top: 2px; display: block; }
-      #layer-list { margin-top: 10px; border-top: 1px solid #444; padding-top: 8px; }
-      #layer-list label { display: flex; align-items: center; gap: 6px; font-size: 12px; color: #ddd; margin: 4px 0; }
+      #sidebar-header {
+        padding: 12px 14px;
+        border-bottom: 1px solid #333;
+        display: flex;
+        align-items: center;
+        justify-content: space-between;
+        flex-shrink: 0;
+      }
+      #sidebar-header h1 { font-size: 14px; margin: 0; color: #fff; }
       #view-toggle {
-        position: absolute; top: 8px; right: 8px; z-index: 10;
-        font: 13px/1 system-ui, sans-serif; color: #fff;
-        background: #ffb454; padding: 10px 16px; border-radius: 6px;
-        text-decoration: none; font-weight: 600;
+        font: 12px/1 system-ui, sans-serif; color: #fff; font-weight: 600;
+        background: #2fa3ff; padding: 7px 12px; border-radius: 5px;
+        text-decoration: none; white-space: nowrap;
       }
-      #view-toggle:hover { background: #ffc677; }
+      #view-toggle:hover { background: #57b6ff; }
+
+      #status-bar {
+        padding: 8px 14px; font-size: 11px; color: #ffb454;
+        border-bottom: 1px solid #333; flex-shrink: 0;
+      }
+
+      #sidebar-scroll { flex: 1; overflow-y: auto; }
+
+      .panel-section { border-bottom: 1px solid #2c2e31; padding: 10px 14px 14px; }
+      .panel-section h2 {
+        font-size: 10px; text-transform: uppercase; letter-spacing: 0.06em;
+        color: #8a8f98; margin: 0 0 8px;
+      }
+      .panel-section label.file-label { display: block; font-size: 11px; color: #aaa; margin-top: 8px; }
+      .panel-section input[type="file"] { margin-top: 3px; display: block; font-size: 11px; width: 100%; color: #ccc; }
+
+      .layer-group { margin-bottom: 2px; }
+      .layer-group-header {
+        display: flex; align-items: center; gap: 6px;
+        padding: 5px 2px; cursor: pointer; border-radius: 4px; user-select: none;
+      }
+      .layer-group-header:hover { background: #2a2d31; }
+      .layer-group-header .caret { width: 10px; font-size: 10px; color: #8a8f98; }
+      .layer-group-header .layer-group-title { font-weight: 600; font-size: 12px; color: #ddd; }
+      .layer-group-body { margin-left: 16px; }
+      .layer-group-empty { margin-left: 16px; font-size: 11px; color: #666; font-style: italic; padding: 2px 0 6px; }
+
+      .layer-row {
+        display: flex; align-items: center; gap: 6px;
+        padding: 3px 2px; font-size: 12px; color: #cfd2d6; cursor: pointer;
+      }
+      .layer-row:hover { color: #fff; }
+      .layer-row input[type="checkbox"], .layer-row input[type="radio"] { flex-shrink: 0; }
+      .layer-row .swatch {
+        width: 10px; height: 10px; border-radius: 2px; flex-shrink: 0; border: 1px solid rgba(255,255,255,0.3);
+      }
+
+      #map { flex: 1; position: relative; }
     </style>
   </head>
   <body>
-    <div id="map"></div>
-    <a id="view-toggle" href="/3d.html">3D View →</a>
-    <div id="hud">
-      <div><b>K2 Site Map</b> — 2D overview</div>
-      <div id="status">Loading map…</div>
-      <label for="ifc-input">IFC design (.ifc)</label>
-      <input id="ifc-input" type="file" accept=".ifc" />
-      <label for="services-input">12d services (.12da / .12daz)</label>
-      <input id="services-input" type="file" accept=".12da,.12daz" />
-      <div id="layer-list"></div>
+    <div id="layout">
+      <aside id="sidebar">
+        <div id="sidebar-header">
+          <h1>K2 Site Map</h1>
+          <a id="view-toggle" href="/3d.html">3D View →</a>
+        </div>
+        <div id="status-bar">Loading map…</div>
+        <div id="sidebar-scroll">
+          <section class="panel-section">
+            <h2>Add Data</h2>
+            <label class="file-label" for="ifc-input">IFC design (.ifc)</label>
+            <input id="ifc-input" type="file" accept=".ifc" />
+            <label class="file-label" for="services-input">12d services (.12da / .12daz)</label>
+            <input id="services-input" type="file" accept=".12da,.12daz" />
+          </section>
+          <section class="panel-section">
+            <h2>Layers</h2>
+            <div id="layer-tree"></div>
+          </section>
+        </div>
+      </aside>
+      <div id="map"></div>
     </div>
     <script type="module" src="/src/main-2d.js"></script>
   </body>

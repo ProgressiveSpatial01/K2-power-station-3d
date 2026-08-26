@@ -4,6 +4,13 @@
 // toggle out to the Three.js excavation scene (3d.html / src/main.js)
 // for the cases that actually need 3D (clash, cut, spatial review).
 //
+// Sidebar layer panel (2026-08-24, per Cameron: "think Civillo Layout" —
+// reading this as the CSBP viewer's grouped/sub-grouped collapsible
+// layer panel, since that's the explicit reference pattern in the
+// brief). Built with layer-tree.js, a small generic collapsible-group
+// helper with no Mapbox knowledge of its own — this file wires each row
+// to actual map visibility.
+//
 // Deliberately reuses the same data/logic modules as the 3D page
 // (crs.js, ifc.js, twelve-d.js) rather than duplicating any CRS or
 // parsing logic — only the rendering shell differs between the two
@@ -16,8 +23,9 @@ import "mapbox-gl/dist/mapbox-gl.css";
 import { mga50ToWgs84 } from "./crs.js";
 import { extractGeoreference } from "./ifc.js";
 import { loadTwelveDaFile } from "./twelve-d.js";
+import { createLayerGroup } from "./layer-tree.js";
 
-const statusEl = document.getElementById("status");
+const statusEl = document.getElementById("status-bar");
 function setStatus(msg) {
   statusEl.textContent = msg;
   console.log("[K2-2D]", msg);
@@ -37,42 +45,197 @@ mapboxgl.accessToken = token;
 
 const [initialLon, initialLat] = mga50ToWgs84(INITIAL_CENTER_MGA);
 
+const BASE_STYLES = {
+  satellite: "mapbox://styles/mapbox/satellite-streets-v12",
+  streets: "mapbox://styles/mapbox/streets-v12",
+};
+
 const map = new mapboxgl.Map({
   container: "map",
-  style: "mapbox://styles/mapbox/satellite-streets-v12",
+  style: BASE_STYLES.satellite,
   center: [initialLon, initialLat],
   zoom: 17,
 });
 
 map.addControl(new mapboxgl.NavigationControl(), "bottom-right");
 
-const layerList = document.getElementById("layer-list");
-const layerToggles = new Map(); // layerId -> checkbox element
+// Last-loaded data, kept so custom sources/layers can be re-added after
+// a base style switch (Mapbox GL wipes all custom sources/layers on
+// map.setStyle() — see wireBaseStyleGroup()).
+const state = {
+  ifcFeature: null,
+  ifcRowAdded: false,
+  serviceFeatures: [],
+  checkedServiceStyles: new Set(),
+};
 
-function addLayerToggle(id, label, defaultOn = true) {
-  const wrapper = document.createElement("label");
-  const checkbox = document.createElement("input");
-  checkbox.type = "checkbox";
-  checkbox.checked = defaultOn;
-  checkbox.addEventListener("change", () => {
-    map.setLayoutProperty(id, "visibility", checkbox.checked ? "visible" : "none");
-  });
-  wrapper.appendChild(checkbox);
-  wrapper.appendChild(document.createTextNode(label));
-  layerList.appendChild(wrapper);
-  layerToggles.set(id, checkbox);
-}
+const layerTreeEl = document.getElementById("layer-tree");
+const baseGroup = createLayerGroup(layerTreeEl, { label: "Base Map" });
+const designGroup = createLayerGroup(layerTreeEl, { label: "Design" });
+const servicesGroup = createLayerGroup(layerTreeEl, { label: "Underground Services" });
+
+wireBaseStyleGroup();
 
 map.on("load", () => {
   setStatus("Ready — choose an .ifc design and/or a .12da/.12daz services file.");
+  addCustomLayers();
   wireIfcInput();
   wireServicesInput();
+});
+
+// Base style switches destroy all custom sources/layers; re-add them
+// (from `state`) once the new style has finished loading.
+map.on("style.load", () => {
+  if (state.ifcFeature || state.serviceFeatures.length > 0) {
+    addCustomLayers();
+  }
 });
 
 map.on("error", (e) => {
   console.error("[K2-2D] Mapbox error:", e.error);
   setStatus(`Map error: ${e.error?.message ?? "see console"}`);
 });
+
+function wireBaseStyleGroup() {
+  let current = "satellite";
+  const setStyle = (key) => {
+    if (key === current) return;
+    current = key;
+    map.setStyle(BASE_STYLES[key]);
+  };
+  baseGroup.addRow({
+    label: "Satellite",
+    checked: true,
+    type: "radio",
+    name: "base-style",
+    onChange: (checked) => checked && setStyle("satellite"),
+  });
+  baseGroup.addRow({
+    label: "Streets",
+    checked: false,
+    type: "radio",
+    name: "base-style",
+    onChange: (checked) => checked && setStyle("streets"),
+  });
+  // Base map is always shown — no group-level "hide everything" toggle
+  // makes sense for it, so grey out its own checkbox rather than let it
+  // do anything.
+  baseGroup.groupCheckbox.disabled = true;
+  baseGroup.groupCheckbox.title = "Base map is always visible";
+}
+
+/** Re-add every custom source/layer currently held in `state`. Safe to call repeatedly. */
+function addCustomLayers() {
+  if (state.ifcFeature) addOrUpdateIfcLayer(state.ifcFeature);
+  if (state.serviceFeatures.length > 0) addOrUpdateServicesLayer(state.serviceFeatures);
+}
+
+function addOrUpdateIfcLayer(feature) {
+  const sourceId = "ifc-design-point";
+  const layerId = "ifc-design-point-layer";
+  const data = { type: "FeatureCollection", features: [feature] };
+
+  if (map.getSource(sourceId)) {
+    map.getSource(sourceId).setData(data);
+    return;
+  }
+
+  map.addSource(sourceId, { type: "geojson", data });
+  map.addLayer({
+    id: layerId,
+    type: "circle",
+    source: sourceId,
+    paint: {
+      "circle-radius": 8,
+      "circle-color": "#ffb454",
+      "circle-stroke-color": "#000",
+      "circle-stroke-width": 2,
+    },
+  });
+  map.on("click", layerId, (e) => {
+    const p = e.features[0].properties;
+    new mapboxgl.Popup()
+      .setLngLat(e.lngLat)
+      .setHTML(
+        `<b>${p.name}</b><br>IFC project base point<br>` +
+          `${p.crsName ?? "CRS unknown"}<br>` +
+          `E ${p.eastingOffset} N ${p.northingOffset}<br>RL ${p.heightOffset} AHD<br>` +
+          `<i>Only a marker — no design geometry shown in 2D yet, see 3D view.</i>`
+      )
+      .addTo(map);
+  });
+
+  // Guard against re-adding a duplicate sidebar row: this function reruns
+  // its "create" branch every time a base-style switch wipes Mapbox's
+  // custom layers (see map.on("style.load", ...) above), but the sidebar
+  // row itself should only ever be created once.
+  if (!state.ifcRowAdded) {
+    state.ifcRowAdded = true;
+    designGroup.addRow({
+      label: feature.properties.name,
+      color: "#ffb454",
+      checked: true,
+      onChange: (checked) => map.setLayoutProperty(layerId, "visibility", checked ? "visible" : "none"),
+    });
+  }
+}
+
+function addOrUpdateServicesLayer(features) {
+  const sourceId = "services-12d";
+  const layerId = "services-12d-layer";
+  const data = { type: "FeatureCollection", features };
+
+  if (map.getSource(sourceId)) {
+    map.getSource(sourceId).setData(data);
+  } else {
+    map.addSource(sourceId, { type: "geojson", data });
+    map.addLayer({
+      id: layerId,
+      type: "line",
+      source: sourceId,
+      layout: { "line-join": "round", "line-cap": "round" },
+      paint: { "line-color": "#2fa3ff", "line-width": 3 },
+    });
+    map.on("click", layerId, (e) => {
+      const p = e.features[0].properties;
+      new mapboxgl.Popup()
+        .setLngLat(e.lngLat)
+        .setHTML(
+          `<b>${p.name ?? "Service"}</b> (${p.style ?? "unknown style"})<br>` +
+            `Diameter: ${p.diameter ?? "?"} m, justify: ${p.justify ?? "?"}<br>` +
+            `Depth: surveyed (12d) — see 3D view for actual elevation.`
+        )
+        .addTo(map);
+    });
+  }
+
+  applyServicesFilter(layerId);
+
+  // Add a sub-toggle for every style not already represented — mirrors
+  // CSBP's sub-grouping, but driven by a Mapbox `filter` on one shared
+  // layer rather than one Mapbox layer per style (cheaper, and scales
+  // to however many service styles a real K2 export turns out to have).
+  const stylesSeen = new Set(features.map((f) => f.properties.style ?? "(no style)"));
+  for (const style of stylesSeen) {
+    if (state.checkedServiceStyles.has(style)) continue; // already has a row
+    state.checkedServiceStyles.add(style);
+    servicesGroup.addRow({
+      label: style,
+      color: "#2fa3ff",
+      checked: true,
+      onChange: (checked) => {
+        if (checked) state.checkedServiceStyles.add(style);
+        else state.checkedServiceStyles.delete(style);
+        applyServicesFilter(layerId);
+      },
+    });
+  }
+}
+
+function applyServicesFilter(layerId) {
+  const checked = [...state.checkedServiceStyles];
+  map.setFilter(layerId, ["in", ["get", "style"], ["literal", checked]]);
+}
 
 function wireIfcInput() {
   const fileInput = document.getElementById("ifc-input");
@@ -104,8 +267,6 @@ function wireIfcInput() {
       }
 
       const [lon, lat] = mga50ToWgs84([georef.eastingOffset, georef.northingOffset]);
-      const sourceId = "ifc-design-point";
-      const layerId = "ifc-design-point-layer";
       const feature = {
         type: "Feature",
         geometry: { type: "Point", coordinates: [lon, lat] },
@@ -117,36 +278,8 @@ function wireIfcInput() {
           heightOffset: georef.heightOffset,
         },
       };
-
-      if (map.getSource(sourceId)) {
-        map.getSource(sourceId).setData({ type: "FeatureCollection", features: [feature] });
-      } else {
-        map.addSource(sourceId, { type: "geojson", data: { type: "FeatureCollection", features: [feature] } });
-        map.addLayer({
-          id: layerId,
-          type: "circle",
-          source: sourceId,
-          paint: {
-            "circle-radius": 8,
-            "circle-color": "#ffb454",
-            "circle-stroke-color": "#000",
-            "circle-stroke-width": 2,
-          },
-        });
-        map.on("click", layerId, (e) => {
-          const p = e.features[0].properties;
-          new mapboxgl.Popup()
-            .setLngLat(e.lngLat)
-            .setHTML(
-              `<b>${p.name}</b><br>IFC project base point<br>` +
-                `${p.crsName ?? "CRS unknown"}<br>` +
-                `E ${p.eastingOffset} N ${p.northingOffset}<br>RL ${p.heightOffset} AHD<br>` +
-                `<i>Only a marker — no design geometry shown in 2D yet, see 3D view.</i>`
-            )
-            .addTo(map);
-        });
-        addLayerToggle(layerId, "IFC design (base point)");
-      }
+      state.ifcFeature = feature;
+      addOrUpdateIfcLayer(feature);
 
       map.flyTo({ center: [lon, lat], zoom: 18 });
       setStatus(
@@ -179,41 +312,15 @@ function wireServicesInput() {
         },
         properties: {
           name: r.name,
-          style: r.style,
+          style: r.style ?? "(no style)",
           diameter: r.diameter,
           justify: r.justify,
           depthAccuracy: "surveyed",
         },
       }));
 
-      const sourceId = "services-12d";
-      const layerId = "services-12d-layer";
-      const data = { type: "FeatureCollection", features };
-
-      if (map.getSource(sourceId)) {
-        map.getSource(sourceId).setData(data);
-      } else {
-        map.addSource(sourceId, { type: "geojson", data });
-        map.addLayer({
-          id: layerId,
-          type: "line",
-          source: sourceId,
-          layout: { "line-join": "round", "line-cap": "round" },
-          paint: { "line-color": "#2fa3ff", "line-width": 3 },
-        });
-        map.on("click", layerId, (e) => {
-          const p = e.features[0].properties;
-          new mapboxgl.Popup()
-            .setLngLat(e.lngLat)
-            .setHTML(
-              `<b>${p.name ?? "Service"}</b> (${p.style ?? "unknown style"})<br>` +
-                `Diameter: ${p.diameter ?? "?"} m, justify: ${p.justify ?? "?"}<br>` +
-                `Depth: surveyed (12d) — see 3D view for actual elevation.`
-            )
-            .addTo(map);
-        });
-        addLayerToggle(layerId, "12d services (surveyed depth)");
-      }
+      state.serviceFeatures = state.serviceFeatures.concat(features);
+      addOrUpdateServicesLayer(state.serviceFeatures);
 
       if (features.length > 0) {
         const coords = features.flatMap((f) => f.geometry.coordinates);
