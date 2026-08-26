@@ -1,22 +1,42 @@
-// profile-chart.js — minimal hand-rolled SVG line chart for the section
-// tool's elevation profile. No charting library: this is one polyline
-// with axes, not worth a dependency for.
+// profile-chart.js — minimal hand-rolled SVG chart for the section tool.
+// No charting library: this is a handful of lines/dots with axes, not
+// worth a dependency for.
+//
+// **Update 2026-08-26, per Cameron: "the mapbox terrain should be
+// removed, it doesn't really do anything relevant."** This used to also
+// plot a Mapbox Terrain-RGB elevation line — removed. The chart now shows
+// only real design/service data: surfaces and service/linework crossings
+// from section-intersect.js. See the README "Terrain" section.
+//
+// **Also added 2026-08-26, per Cameron: "it should have a live snap
+// displaying difference in between a surface or ifc object, and the
+// services model so when you drag your mouse across the section it is
+// locked to the surface with one snap and then snaps to the nearest
+// [service] with the other snap giving a delta height."** — a live
+// mouse-drag readout: as you move across the plot area, one snap follows
+// the loaded surface's own elevation directly under the cursor
+// (interpolated along whichever surface chord covers that point) and the
+// other snaps to the nearest service/design-linework crossing, showing
+// the vertical delta between them (e.g. cover depth between a pipe and a
+// proposed pad). IFC is NOT included in the surface snap yet — same
+// "only a bounding-box footprint, no real geometry" limitation as
+// section-intersect.js (see its header) — this reads from the same
+// `surfaceChords` data that module already produces, so it inherits that
+// gap rather than reintroducing it here.
 
 /**
- * Render an elevation-vs-distance chart into `container`.
+ * Render a section/profile chart into `container`.
  * @param {HTMLElement} container
- * @param {{ points: Array<{distanceM: number, elevationAhd: number|null}>, totalDistanceM: number }} profile
+ * @param {{ totalDistanceM: number }} section - the drawn line's total length
  * @param {{
  *   lineCrossings?: Array<{ distanceM: number, elevationAhd: number, layerKind: string,
  *     name: string, model: string, colour: string }>,
  *   surfaceChords?: Array<{ points: Array<{distanceM: number, elevationAhd: number}>,
  *     surfaceName: string, colour: string }>,
  * }} [overlays] - real design/services crossings along the cut line, from
- *   section-intersect.js (added 2026-08-26, per Cameron: "need to be able
- *   to see these layers on the section view as well") — plotted at their
- *   own real elevation, distinct from the terrain line.
+ *   section-intersect.js.
  */
-export function renderProfileChart(container, { points, totalDistanceM }, overlays = {}) {
+export function renderProfileChart(container, { totalDistanceM }, overlays = {}) {
   const { lineCrossings = [], surfaceChords = [] } = overlays;
   const width = 640;
   const height = 320;
@@ -24,50 +44,28 @@ export function renderProfileChart(container, { points, totalDistanceM }, overla
   const plotW = width - margin.left - margin.right;
   const plotH = height - margin.top - margin.bottom;
 
-  const known = points.filter((p) => p.elevationAhd != null);
-  if (known.length === 0 && lineCrossings.length === 0 && surfaceChords.length === 0) {
-    container.innerHTML = `<p class="profile-empty">No elevation data available along this line (outside terrain coverage).</p>`;
+  if (lineCrossings.length === 0 && surfaceChords.length === 0) {
+    container.innerHTML =
+      `<p class="profile-empty">No currently-visible service/linework/surface layer crosses ` +
+      `this line (terrain is no longer plotted — see README).</p>`;
     return;
   }
 
-  // Elevation range must cover the terrain line AND every crossing/chord —
-  // a service several metres underground would otherwise fall outside a
-  // Y-range picked from terrain alone.
   const allElevations = [
-    ...known.map((p) => p.elevationAhd),
     ...lineCrossings.map((c) => c.elevationAhd),
     ...surfaceChords.flatMap((chord) => chord.points.map((p) => p.elevationAhd)),
   ];
   const minEl = Math.min(...allElevations);
   const maxEl = Math.max(...allElevations);
-  // Pad the elevation range a little so the line doesn't touch the edges.
+  // Pad the elevation range a little so nothing touches the edges.
   const pad = Math.max(0.5, (maxEl - minEl) * 0.1);
   const yMin = minEl - pad;
   const yMax = maxEl + pad;
 
   const x = (d) => margin.left + (d / totalDistanceM) * plotW;
   const y = (el) => margin.top + plotH - ((el - yMin) / (yMax - yMin)) * plotH;
-
-  // Break into contiguous segments so gaps (no tile coverage) don't draw
-  // a misleading straight line across missing data.
-  const segments = [];
-  let current = [];
-  for (const p of points) {
-    if (p.elevationAhd == null) {
-      if (current.length > 1) segments.push(current);
-      current = [];
-      continue;
-    }
-    current.push(p);
-  }
-  if (current.length > 1) segments.push(current);
-
-  const pathsSvg = segments
-    .map((seg) => {
-      const d = seg.map((p, i) => `${i === 0 ? "M" : "L"} ${x(p.distanceM).toFixed(1)} ${y(p.elevationAhd).toFixed(1)}`).join(" ");
-      return `<path d="${d}" fill="none" stroke="#2fa3ff" stroke-width="2" />`;
-    })
-    .join("");
+  const distanceAtX = (svgX) =>
+    Math.min(totalDistanceM, Math.max(0, ((svgX - margin.left) / plotW) * totalDistanceM));
 
   // A handful of Y gridlines/labels.
   const yTickCount = 5;
@@ -105,8 +103,8 @@ export function renderProfileChart(container, { points, totalDistanceM }, overla
     .join("");
 
   // Services/design linework: a marker dot at the real crossing elevation,
-  // plus a faint drop-line to the bottom axis so a crossing buried well
-  // below the terrain line is still easy to spot.
+  // plus a faint drop-line to the bottom axis so a deeply-buried crossing
+  // is still easy to spot.
   const lineCrossingsSvg = lineCrossings
     .map((c) => {
       const xx = x(c.distanceM).toFixed(1);
@@ -123,14 +121,131 @@ export function renderProfileChart(container, { points, totalDistanceM }, overla
   container.innerHTML = `
     <svg viewBox="0 0 ${width} ${height}" style="width:100%; height:auto; display:block; background:#1b1d20;">
       ${yTicksSvg}
-      ${pathsSvg}
       ${surfaceChordsSvg}
       ${lineCrossingsSvg}
       ${xTicksSvg}
-      <text x="${margin.left}" y="${margin.top - 4}" fill="#8a8f98" font-size="11">Elevation AHD (m) vs distance along line</text>
+      <text x="${margin.left}" y="${margin.top - 4}" fill="#8a8f98" font-size="11">Elevation AHD (m) — surfaces/crossings vs distance along line</text>
+      <g class="live-snap" style="display:none; pointer-events:none;">
+        <line class="snap-guide" stroke="#666" stroke-width="1" stroke-dasharray="3,3" />
+        <line class="snap-connector" stroke="#ffb454" stroke-width="1.5" stroke-dasharray="4,2" />
+        <circle class="snap-surface" r="5" fill="none" stroke="#2ee6c8" stroke-width="2" />
+        <circle class="snap-service" r="5" fill="none" stroke="#ffb454" stroke-width="2" />
+      </g>
+      <rect class="snap-capture" x="${margin.left}" y="${margin.top}" width="${plotW}" height="${plotH}" fill="transparent" />
     </svg>
+    <div class="snap-readout" style="min-height:16px; margin:4px 2px 0; font-size:12px; color:#ffb454;"></div>
     ${legendHtml(lineCrossings, surfaceChords)}
   `;
+
+  wireLiveSnap(container, { x, y, distanceAtX, margin, plotH, lineCrossings, surfaceChords });
+}
+
+/**
+ * The live surface/service delta-height snap (see file header). Reads
+ * back the just-rendered SVG's own elements rather than keeping parallel
+ * state — this is the whole reason margin/plotH/x/y/distanceAtX get
+ * passed in, so the maths here matches what was actually drawn exactly.
+ */
+function wireLiveSnap(container, { x, y, distanceAtX, margin, plotH, lineCrossings, surfaceChords }) {
+  const svg = container.querySelector("svg");
+  const captureRect = container.querySelector(".snap-capture");
+  const liveGroup = container.querySelector(".live-snap");
+  const guideLine = container.querySelector(".snap-guide");
+  const connector = container.querySelector(".snap-connector");
+  const surfaceDot = container.querySelector(".snap-surface");
+  const serviceDot = container.querySelector(".snap-service");
+  const readout = container.querySelector(".snap-readout");
+  if (!svg || !captureRect) return;
+
+  function svgPointFromMouse(evt) {
+    const pt = svg.createSVGPoint();
+    pt.x = evt.clientX;
+    pt.y = evt.clientY;
+    return pt.matrixTransform(svg.getScreenCTM().inverse());
+  }
+
+  function elevationOnSurfaceAt(distanceM) {
+    for (const chord of surfaceChords) {
+      const pts = chord.points;
+      if (distanceM < pts[0].distanceM || distanceM > pts[pts.length - 1].distanceM) continue;
+      for (let i = 0; i < pts.length - 1; i++) {
+        const a = pts[i];
+        const b = pts[i + 1];
+        if (distanceM >= a.distanceM && distanceM <= b.distanceM) {
+          const span = b.distanceM - a.distanceM;
+          const t = span === 0 ? 0 : (distanceM - a.distanceM) / span;
+          return { elevationAhd: a.elevationAhd + t * (b.elevationAhd - a.elevationAhd), surfaceName: chord.surfaceName };
+        }
+      }
+    }
+    return null; // no loaded surface covers this point along the line
+  }
+
+  function nearestServiceCrossing(distanceM) {
+    if (lineCrossings.length === 0) return null;
+    return lineCrossings.reduce((best, c) =>
+      Math.abs(c.distanceM - distanceM) < Math.abs(best.distanceM - distanceM) ? c : best
+    );
+  }
+
+  function onMove(evt) {
+    const { x: svgX } = svgPointFromMouse(evt);
+    const distanceM = distanceAtX(svgX);
+    const xx = x(distanceM);
+
+    liveGroup.style.display = "block";
+    guideLine.setAttribute("x1", xx);
+    guideLine.setAttribute("x2", xx);
+    guideLine.setAttribute("y1", margin.top);
+    guideLine.setAttribute("y2", margin.top + plotH);
+
+    const surfaceHit = elevationOnSurfaceAt(distanceM);
+    const serviceHit = nearestServiceCrossing(distanceM);
+
+    if (surfaceHit) {
+      surfaceDot.style.display = "block";
+      surfaceDot.setAttribute("cx", xx);
+      surfaceDot.setAttribute("cy", y(surfaceHit.elevationAhd));
+    } else {
+      surfaceDot.style.display = "none";
+    }
+
+    if (serviceHit) {
+      const serviceX = x(serviceHit.distanceM);
+      serviceDot.style.display = "block";
+      serviceDot.setAttribute("cx", serviceX);
+      serviceDot.setAttribute("cy", y(serviceHit.elevationAhd));
+    } else {
+      serviceDot.style.display = "none";
+    }
+
+    if (surfaceHit && serviceHit) {
+      connector.style.display = "block";
+      connector.setAttribute("x1", xx);
+      connector.setAttribute("y1", y(surfaceHit.elevationAhd));
+      connector.setAttribute("x2", x(serviceHit.distanceM));
+      connector.setAttribute("y2", y(serviceHit.elevationAhd));
+      const delta = Math.abs(surfaceHit.elevationAhd - serviceHit.elevationAhd);
+      readout.textContent =
+        `Δ ${delta.toFixed(3)} m — ${surfaceHit.surfaceName} (RL ${surfaceHit.elevationAhd.toFixed(3)}) ↔ ` +
+        `${serviceHit.name} (RL ${serviceHit.elevationAhd.toFixed(3)}, ${Math.abs(serviceHit.distanceM - distanceM).toFixed(1)}m along line)`;
+    } else {
+      connector.style.display = "none";
+      readout.textContent = !surfaceHit && !serviceHit
+        ? "No surface or service data under the cursor here."
+        : !surfaceHit
+          ? "No loaded surface covers this point (nearest service shown, no delta to compare against)."
+          : "No service/linework crossing loaded to compare against.";
+    }
+  }
+
+  function onLeave() {
+    liveGroup.style.display = "none";
+    readout.textContent = "";
+  }
+
+  captureRect.addEventListener("mousemove", onMove);
+  captureRect.addEventListener("mouseleave", onLeave);
 }
 
 /**
@@ -140,14 +255,14 @@ export function renderProfileChart(container, { points, totalDistanceM }, overla
  * (dot vs. line) rather than trying to list every colour used.
  */
 function legendHtml(lineCrossings, surfaceChords) {
-  if (lineCrossings.length === 0 && surfaceChords.length === 0) return "";
-  const parts = [`<span style="color:#2fa3ff">▬</span> Terrain (Mapbox Terrain-RGB)`];
+  const parts = [];
   if (lineCrossings.length > 0) {
     parts.push(`<span>●</span> Service/design linework crossing (hover for name + RL)`);
   }
   if (surfaceChords.length > 0) {
     parts.push(`<span>▬</span> Design surface (hover for name)`);
   }
+  parts.push(`<span style="color:#ffb454">┊</span> Drag across the chart for a live surface↔service delta height`);
   return `<p style="margin:6px 2px 0; font-size:11px; color:#8a8f98;">${parts.join(" &nbsp;·&nbsp; ")}</p>`;
 }
 

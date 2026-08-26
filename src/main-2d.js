@@ -35,9 +35,8 @@ import { normalizeColour } from "./service-colour.js";
 import { createLayerGroup } from "./layer-tree.js";
 import { buildModelTree } from "./model-tree.js";
 import { createDrawTools } from "./draw-tools.js";
-import { fetchElevationProfile } from "./elevation-profile.js";
 import { renderProfileChart } from "./profile-chart.js";
-import { computeSectionCrossings } from "./section-intersect.js";
+import { computeSectionCrossings, lineLengthM } from "./section-intersect.js";
 import { createSurfaceCompareControl } from "./surface-compare.js";
 
 const statusEl = document.getElementById("status-bar");
@@ -994,14 +993,14 @@ function wireServicesInput() {
 //
 // "Section" (per Cameron, 2026-08-24): draw a line, split the view so a
 // profile pane opens alongside the map (a "Civillo"-style layout — see
-// README) showing elevation-vs-distance along that line, sampled from
-// the same Mapbox Terrain-RGB data used as the 3D scene's terrain
-// fallback (elevation-profile.js / terrain-rgb.js). This is a plan-view
-// tool only for now — it doesn't yet intersect the loaded IFC design or
-// 12d services along the cut line, just terrain. Chose a side-by-side
-// split (map | profile) rather than stacked top/bottom, matching how
-// Civil3D/most section tools pair a plan view with a profile view —
-// flag to Cameron if a stacked layout was actually meant.
+// README) showing where that line crosses loaded design/service data
+// (section-intersect.js). No terrain line any more (removed 2026-08-26,
+// per Cameron: "the mapbox terrain should be removed, it doesn't really
+// do anything relevant" — see README "Terrain"); IFC design geometry
+// isn't intersected yet either — see section-intersect.js's header.
+// Chose a side-by-side split (map | profile) rather than stacked top/
+// bottom, matching how Civil3D/most section tools pair a plan view with
+// a profile view — flag to Cameron if a stacked layout was actually meant.
 
 function wireMapToolbar() {
   const btnDistance = document.getElementById("tool-distance");
@@ -1041,14 +1040,13 @@ function wireMapToolbar() {
 
   const tools = createDrawTools(map, {
     onMeasureResult: showMeasureResult,
-    onSectionLine: async (lineCoordsWgs84) => {
+    onSectionLine: (lineCoordsWgs84) => {
       setActiveTool(null); // section is single-shot; drawing is done
       profilePane.classList.add("active");
       afterPaneToggle();
-      profileSummaryEl.textContent = "Sampling terrain elevation along the line…";
       profileChartEl.innerHTML = "";
       try {
-        const profile = await fetchElevationProfile(lineCoordsWgs84, token);
+        const totalDistanceM = lineLengthM(lineCoordsWgs84);
 
         // Cut-line crossings against whatever's currently checked "on" in
         // the sidebar — services, design linework, design surfaces (added
@@ -1056,6 +1054,9 @@ function wireMapToolbar() {
         // the section view as well"). NOT the IFC design layer — see
         // section-intersect.js's header for why (only a bounding-box
         // footprint is tracked in 2D, not real geometry to intersect).
+        // No terrain sampling any more either — removed the same day per
+        // Cameron: "the mapbox terrain should be removed, it doesn't
+        // really do anything relevant" (see README "Terrain").
         const crossings = computeSectionCrossings(lineCoordsWgs84, {
           lineFeatures: [
             ...servicesController.getVisibleFeatures(),
@@ -1066,14 +1067,14 @@ function wireMapToolbar() {
 
         const crossingCount = crossings.lineCrossings.length + crossings.surfaceChords.length;
         profileSummaryEl.textContent =
-          `Length: ${profile.totalDistanceM.toFixed(1)} m. Terrain elevation from Mapbox ` +
-          "Terrain-RGB (coarse — see README)" +
+          `Length: ${totalDistanceM.toFixed(1)} m. ` +
           (crossingCount > 0
-            ? `, plus ${crossings.lineCrossings.length} service/linework crossing(s) and ` +
-              `${crossings.surfaceChords.length} surface segment(s) below, at real surveyed/design ` +
-              "elevation. IFC design geometry isn't intersected yet (only its footprint is tracked in 2D)."
-            : ". No currently-visible service/linework/surface layers cross this line.");
-        renderProfileChart(profileChartEl, profile, crossings);
+            ? `${crossings.lineCrossings.length} service/linework crossing(s) and ` +
+              `${crossings.surfaceChords.length} surface segment(s) shown below, at real surveyed/` +
+              "design elevation — drag across the chart for a live surface↔service delta height. " +
+              "IFC design geometry isn't intersected yet (only its footprint is tracked in 2D)."
+            : "No currently-visible service/linework/surface layer crosses this line.");
+        renderProfileChart(profileChartEl, { totalDistanceM }, crossings);
       } catch (err) {
         console.error(err);
         profileSummaryEl.textContent = `Failed to build profile: ${err.message}`;

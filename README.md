@@ -22,9 +22,10 @@ export, and a real IFC design with a georeferencing pattern not seen
 before (no `IFCMAPCONVERSION` at all — see "IFC 2D footprint"). **3D
 scene has a known rendering issue** — see "Known issues" — currently
 lower priority since 2D is now the primary shell, but not forgotten.
-Underlying data/logic (CRS, IFC georeferencing, 12d parsing, Mapbox
-terrain) is shared by both views and is solid — see the phase-by-phase
-detail further down.
+Underlying data/logic (CRS, IFC georeferencing, 12d parsing) is shared by
+both views and is solid — see the phase-by-phase detail further down.
+(Mapbox Terrain-RGB elevation, previously also in this list, was removed
+2026-08-26 as not relevant enough to keep — see "Terrain.")
 
 ## Quick start
 
@@ -51,10 +52,11 @@ terrain).
   the sidebar header. A floating toolbar on the map itself (top-left)
   provides **Distance**/**Area** measurement and a **Section** (cross-
   section/profile) tool — see "Measurement & section tools" below.
-- **`3d.html`** — the original Three.js excavation/clash scene: real
-  Mapbox terrain, IFC design loading + georeferencing, 12d services
-  extruded into 3D pipes, a test surface above them. "← 2D Map" link
-  back. See "Known issues" before relying on this rendering visibly.
+- **`3d.html`** — the original Three.js excavation/clash scene: a flat
+  satellite-imagery ground plane (no elevation data — see "Terrain"),
+  IFC design loading + georeferencing, 12d services extruded into 3D
+  pipes, a test surface above them. "← 2D Map" link back. See "Known
+  issues" before relying on this rendering visibly.
 
 Real K2 sample files (gitignored, not in this repo — see "Data" below)
 live in `data-private/ifc/` and `data-private/12d/`.
@@ -125,7 +127,7 @@ correct, at the cost of resetting any checkboxes the user had unticked.
 Acceptable for now since this only fires once or twice a session in
 practice (one services file load, maybe a second with new models).
 
-### Measurement & section tools (`src/draw-tools.js`, `src/elevation-profile.js`, `src/profile-chart.js`)
+### Measurement & section tools (`src/draw-tools.js`, `src/section-intersect.js`, `src/profile-chart.js`)
 
 Per Cameron's request (2026-08-24), referencing Civillo's layout
 (civillo.com) as the pattern to match — read as inspiration for the
@@ -144,16 +146,18 @@ pixel clone of their branding/icon set.
   that phrase) — picked side-by-side to match how Civil3D pairs a plan
   view with a profile view, but this is a one-line CSS/layout change to
   flip if Cameron meant the other one.
-- Elevation comes from the **same Mapbox Terrain-RGB source** as the 3D
-  scene's terrain (`src/terrain-rgb.js`, factored out of
-  `mapbox-terrain.js` so this doesn't need to pull in Three.js) — same
-  "coarse global data, not survey-grade" caveat applies.
-- **Services/design linework/design surfaces now shown on the section
-  view too** (added 2026-08-26, per Cameron: "need to be able to see
-  these layers on the section view as well") — see "Section view now
-  shows crossing layers" below. **IFC design geometry is NOT included**
-  — the 2D page only tracks an axis-aligned bounding-box footprint for
-  IFC, not its real mesh, so there's no true geometry to intersect yet.
+- **No terrain elevation any more** (removed 2026-08-26, per Cameron:
+  "the mapbox terrain should be removed, it doesn't really do anything
+  relevant" — see "Terrain" below). Originally sampled Mapbox
+  Terrain-RGB the same way the 3D scene's terrain did; now the chart only
+  ever shows real design/service data.
+- **Services/design linework/design surfaces shown on the section view**
+  (added 2026-08-26, per Cameron: "need to be able to see these layers on
+  the section view as well") — see "Section view now shows crossing
+  layers" below, including a live drag-to-compare surface↔service delta-
+  height snap. **IFC design geometry is NOT included** — the 2D page only
+  tracks an axis-aligned bounding-box footprint for IFC, not its real
+  mesh, so there's no true geometry to intersect yet.
 - One shared `mapbox-gl-draw` instance backs both tools (`draw-tools.js`)
   — it doesn't expect two independent instances managing the same map's
   drawing layer, so a single "current mode" dispatches `draw.create` to
@@ -675,8 +679,10 @@ wasn't possible this session (suspended render loop).
 Per Cameron: **"need to be able to see these layers on the section view
 as well."** Previously the section/profile tool only sampled terrain —
 now it also shows where the cut line crosses Underground Services,
-Design Linework, and Design Surfaces, at their own real elevation (not
-terrain height).
+Design Linework, and Design Surfaces, at their own real elevation. (The
+terrain sampling itself was removed entirely a little later the same
+day — see "Terrain" below — so this is now the ONLY thing the section
+view plots.)
 
 - Each 12d-sourced feature now keeps its real elevation as a 3rd GeoJSON
   coordinate value (`[lon, lat, elevationAhd]`) all the way from
@@ -693,7 +699,7 @@ terrain height).
   Z at the exact crossing point. Rendered as a coloured dot (each
   feature's own real, normalised 12d colour) with a hover tooltip
   (name/model/RL) and a faint drop-line to the axis so a deeply-buried
-  crossing is still easy to spot against the terrain line.
+  crossing is still easy to spot.
 - **Design surfaces**: same idea, per-triangle — where the cut line
   crosses a triangle's edges, its elevation is interpolated (linearly,
   in 2D-plan terms) between that edge's two real vertices. Each triangle
@@ -709,9 +715,8 @@ terrain height).
   invented-looking-like-real-data result this project's data-fidelity
   standard rules out. Revisit if/when the 2D page keeps the real loaded
   IFC mesh around for this rather than just a footprint.
-- Chart Y-axis range now spans the terrain line AND every crossing/chord
-  — otherwise a service several metres underground could fall outside a
-  range picked from terrain elevation alone.
+- Chart Y-axis range spans every crossing/chord actually present (no
+  terrain line to also span any more — see "Terrain" below).
 
 **Verified**: the segment-intersection math against a synthetic
 known-answer case first (Node — a line crossing dead-centre of another
@@ -731,66 +736,108 @@ error (2 crossing dots, 2 paths, correct legend text) — a full on-screen
 screenshot of the real chart wasn't possible this session (see "Design
 surfaces" above for why).
 
-### Terrain (`src/terrain.js`, `src/mapbox-terrain.js`) — Mapbox live, real drone DSM still pending
+**Update, same day — live surface↔service delta-height snap
+(`src/profile-chart.js`).** Cameron: *"it should have a live snap
+displaying difference in between a surface or ifc object, and the
+services model so when you drag your mouse across the section it is
+locked to the surface with one snap and then snaps to the nearest
+[service] with the other snap giving a delta height."* Dragging the
+mouse across the profile chart now shows two live snap markers and the
+vertical distance between them — e.g. checking cover depth between a
+proposed pad surface and the nearest pipe, continuously as you scan
+across the section, instead of having to read two RL values off the
+chart and subtract them by eye.
 
-Cameron confirmed (2026-08-24): **no drone flight exists yet for K2**,
-so Mapbox imagery is the default fallback, not a one-off placeholder —
-and supplied his Mapbox public token the same day, so this is now wired
-up and working, not just planned.
+- **Surface snap**: follows the cursor's exact X position, interpolated
+  along whichever loaded surface chord covers that point (piecewise-
+  linear between the chord's own real vertices — same data
+  `computeSectionCrossings()` already produces, no new geometry work).
+- **Service snap**: the NEAREST service/design-linework crossing to the
+  cursor's current position (not interpolated — crossings are discrete
+  point events, so "nearest" is literally the closest one by distance
+  along the line). The readout also shows how far that nearest crossing
+  actually is from the cursor, so it's clear when "nearest" isn't
+  "directly under the cursor."
+- Delta height = the absolute difference between the two snapped
+  elevations, shown live in a text readout below the chart alongside
+  both RL values and names, plus a dashed connector line between the two
+  points on the chart itself and a vertical guide line at the cursor.
+- **IFC is NOT included in the surface snap** — same limitation as
+  `computeSectionCrossings()` itself (see above): the 2D page only has an
+  IFC bounding-box footprint, not real geometry, so there's nothing
+  genuine to snap to yet. The surface snap only reads from
+  `surfaceChords` (12d `full_tin` data), which is real.
+- If more than one surface is loaded and they overlap at the same cut-
+  line position, the snap currently just takes whichever chord it finds
+  first — no UI yet to pick "which surface" the snap should prefer at an
+  overlap. Not addressed since the sample data never overlaps this way;
+  flag if this comes up with real multi-surface data.
 
-**Implementation** (`mapbox-terrain.js`): fetches Mapbox Terrain-RGB (DEM)
-and Satellite tiles covering a 200m square around the scene origin,
-decodes elevation per pixel (`height = -10000 + (R·65536 + G·256 + B) × 0.1`),
-builds a heightfield mesh from it, and textures it with the stitched
-satellite imagery. API details (tile URL template, `.pngraw` format for
-undistorted elevation data, `mapbox.satellite`/`mapbox.terrain-rgb`
-tileset ids) were checked against Mapbox's own docs before writing this,
-not guessed. **One correction to the original plan**: Terrain-RGB's real
-data only goes to zoom 15 ("data up to zoom 15... higher zoom levels
-will not increase data resolution" — Mapbox's own docs), not 16 as
-originally assumed; zoom is fixed at 15 rather than exposed as a
-misleading "quality" knob.
+**Verified live in-browser**: rendered a synthetic chart (a surface chord
+from RL 8.0 at 50m to RL 9.0 at 150m, a service crossing at RL 5.0 at
+100m) and dispatched a real `mousemove` at the chart's exact midpoint
+(distance = 100m): got surface RL correctly interpolated to **8.5**
+(halfway between 8.0 and 9.0), service RL correctly read as **5.0** at
+**0.0m** away (the crossing sits exactly there), and the delta readout
+correctly showed **Δ 3.500 m** — matching the expected numbers exactly,
+not just "something rendered." Also confirmed `mouseleave` correctly
+hides the live overlay and clears the readout.
 
-**Verified working**, not just assumed: ran it against the real GT11
-site coordinates and got a plausible elevation range (**3.2–16.4m AHD**
-over the 200m test extent) — sane for coastal industrial Kwinana and
-consistent with GT11's own RL 5.55 AHD datum. No pixel-level check has
-been done on the satellite image alignment (UV mapping follows the same
-per-vertex lon/lat → mercator-pixel calculation as the elevation
-sampling, so it should be correct, but hasn't been eyeballed) — the
-elevation values are the part that actually matters for excavation-cut
-work later, and those are the part that's been checked.
+### Terrain (`src/terrain.js`) — Mapbox Terrain-RGB REMOVED 2026-08-26, imagery kept
 
-`getCurrentTerrain()` tries Mapbox first if `VITE_MAPBOX_TOKEN` is set
-(`.env.local`, gitignored — Mapbox `pk.*` tokens are public/client-
-embeddable by design, not secret keys, but kept out of git history
-anyway so it's easy to rotate). Falls back to a flat wireframe reference
-plane at the site's own AHD datum height if the token is missing or the
-fetch fails — deliberately not a fake bumpy surface, since a synthetic
-undulation next to real IFC/services geometry risks being mistaken for
-real ground shape.
+**Cameron: "the mapbox terrain should be removed, it doesn't really do
+anything relevant, images to stay."** Originally (2026-08-24, when no K2
+drone flight existed yet) this used Mapbox's Terrain-RGB DEM tileset as
+the default elevation source — real, if coarse (global data, zoom-15
+max), not synthetic. Once real design/service/surface elevation data (12d
+surfaces, services, IFC) was actually loadable and comparable, that
+coarse global heightfield stopped earning its keep — it never lined up
+meaningfully with the real, much more precise data actually being worked
+with, and was just visual noise/a false sense of "real ground."
+**Removed entirely, everywhere it was used**:
 
-**Reminder this is still coarse global data, not survey-grade**: every
-status message and the mesh's own `userData.source` say so. Swap point
-design is unchanged: Mapbox Terrain-RGB → (later) a real drone DSM/DTM →
-(eventually) the WebODM-based delivery platform, each swapped in without
-the rest of the scene changing.
+- **2D section/profile view**: no longer samples or plots a terrain
+  elevation line at all — see "Section view now shows crossing layers"
+  below. `elevation-profile.js` (the module that did this sampling) is
+  deleted; `section-intersect.js`'s own crossing logic never depended on
+  it and is unaffected.
+- **3D scene**: `getCurrentTerrain()` (`terrain.js`) no longer builds a
+  Terrain-RGB heightfield mesh. `mapbox-terrain.js` (the old
+  implementation) is deleted, replaced by `ground-imagery.js` —
+  **imagery stays, per Cameron ("images to stay")**: a FLAT plane
+  textured with the same stitched Mapbox satellite imagery, just with no
+  elevation draped onto it (every vertex sits at the scene origin's own
+  AHD, not a real ground shape). `terrain-rgb.js` (shared tile-fetch/
+  decode logic) is renamed to `mapbox-tiles.js` and stripped of its now-
+  unused elevation-decoding exports (`decodeTerrainRgbHeight`,
+  `fetchTerrainRgbCoverage`) — it's now just generic Mapbox raster-tile
+  fetching, used only for the imagery plane.
+- **Unaffected**: `buildTestSurfaceAbovePipes()` (`terrain.js`) — the
+  test "~0.9m above the pipe" cover-depth surface used for the future
+  excavation-cut view. This was never Mapbox-sourced (built from real
+  service pipe elevations), so it's a completely separate concept from
+  the terrain that got removed, and still works exactly as before.
 
-**Test surface override**: per Cameron's request (2026-08-24), loading a
-12d services file replaces whatever terrain is showing (Mapbox or
-placeholder) with a flat plane ~0.9m above the average top-of-pipe
-elevation (`terrain.js buildTestSurfaceAbovePipes()`) — a deliberately
-crude stand-in "cover depth" surface for testing the future excavation-
-cut view, not a real terrain source. Verified: real sample pipes average
-~6.29m AHD → test surface built at RL 7.19 AHD.
+**Verified**: re-imported `terrain.js`/`ground-imagery.js`/
+`mapbox-tiles.js` live in-browser and called `getCurrentTerrain()`
+against the real GT11 site origin — confirmed it returns a flat plane
+(source `"mapbox-satellite-flat"`) with a real satellite-imagery texture
+attached (`mesh.material.map` present) and every vertex at the scene's
+own datum height (Y ≈ 0 to within floating-point noise, ~1e-15 —
+negligible at any real scale, not a residual heightfield). Also
+confirmed `main-2d.js` and the whole `terrain.js` import chain still
+load without error after the rename/deletions.
 
 ## Suggested Build Phases (from project brief)
 
 - **Phase A — Foundations**: ✅ Three.js scene up; ✅ real IFC file loads,
   renders, and georeferences correctly against MGA50 (verified via
-  bounding-box check); ✅ real (if coarse) terrain via Mapbox Terrain-RGB,
-  verified against plausible site elevation; ❌ real drone DSM (blocked
-  on a K2 flight happening — Mapbox is the interim default).
+  bounding-box check); ❌ real drone DSM/DTM (blocked on a K2 flight
+  happening — no elevation fallback in the meantime any more either,
+  since Mapbox Terrain-RGB was removed 2026-08-26 as not relevant enough
+  to keep; see "Terrain" — a flat satellite-imagery-textured ground
+  plane is the current interim default instead, imagery only, no
+  elevation).
 - **Phase B — Services in 3D**: ✅ real 12d pipe export parses and
   extrudes into 3D geometry with justify-corrected surveyed depth; ❌
   flat/assumed-depth fallback path for non-12d sources not implemented;
@@ -833,7 +880,10 @@ cut view, not a real terrain source. Verified: real sample pipes average
    `C:\Users\camer\K2-Power-Station-3D`, not pushed anywhere, per
    Cameron's instruction to push everything at once later.
 2. **A real drone DSM/DTM**, whenever a K2 flight happens — will replace
-   the Mapbox Terrain-RGB fallback per the swap-point design.
+   the current flat satellite-imagery ground plane (`ground-imagery.js`)
+   as the 3D scene's default per the swap-point design in `terrain.js`
+   (Mapbox Terrain-RGB elevation itself was removed 2026-08-26, see
+   "Terrain" — it's not the fallback any more, just the interim imagery).
 3. **Cross-check on the 12d `justify top` depth correction** — no known
    invert level was available to validate the ± diameter/2 offset
    against; worth a sanity check against a drawing or as-built if one's

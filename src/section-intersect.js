@@ -1,8 +1,12 @@
 // section-intersect.js — find where the section/profile cut line crosses
 // the currently-loaded design/services layers, so the profile chart can
-// show real crossing depths/surface elevations alongside the terrain
-// line, not just terrain. Per Cameron (2026-08-26): "need to be able to
-// see these layers on the section view as well."
+// show real crossing depths/surface elevations. Per Cameron (2026-08-26):
+// "need to be able to see these layers on the section view as well."
+// (Originally alongside a Mapbox Terrain-RGB elevation line too — removed
+// 2026-08-26, same day, per Cameron: "the mapbox terrain should be
+// removed, it doesn't really do anything relevant" — see profile-chart.js
+// and the README "Terrain" section. This module's own crossing/chord
+// logic is unaffected; it never depended on terrain data.)
 //
 // Pure 2D-lon/lat-plane geometry (no turf dependency beyond distance
 // calcs) — the site is small enough that treating lon/lat as a flat
@@ -32,6 +36,17 @@ function cumulativeDistances(coords2d) {
     cum.push(cum[i - 1] + d * 1000);
   }
   return cum;
+}
+
+/**
+ * Total length (metres) of a drawn line — used by main-2d.js for the
+ * section chart's X-axis now that there's no terrain fetch to derive it
+ * from as a side effect. Same distance basis as every crossing computed
+ * below, so chart positions stay consistent.
+ */
+export function lineLengthM(coords2d) {
+  const cum = cumulativeDistances(coords2d);
+  return cum[cum.length - 1];
 }
 
 /**

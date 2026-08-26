@@ -7,26 +7,25 @@
 // (IFC design, services, excavation cut) should not care where the
 // heightfield came from.
 //
-// Cameron confirmed (2026-08-24): no drone flight exists yet for K2, so
-// Mapbox imagery/terrain is the DEFAULT fallback rather than a one-off
-// placeholder — Mapbox's public Terrain-RGB DEM tileset (real, if
-// coarse, global elevation data — see mapbox-terrain.js) draped with
-// Mapbox satellite imagery, via the same Mapbox account/token already
-// used for the CSBP 2D viewer. Wired up 2026-08-24 once Cameron supplied
-// the token. If VITE_MAPBOX_TOKEN isn't configured (see .env.local),
-// this falls back to a flat reference plane instead of failing outright
-// — deliberately NOT a fake undulating surface, since a synthetic bump
-// risks being mistaken for real ground shape once real IFC/services
-// geometry is in the same scene.
+// **Update 2026-08-26, per Cameron: "the mapbox terrain should be
+// removed, it doesn't really do anything relevant, images to stay."**
+// Previously (2026-08-24) this used Mapbox's Terrain-RGB DEM tileset as
+// a real-if-coarse default elevation source, since no K2 drone flight
+// existed yet. Removed: that coarse global heightfield wasn't earning
+// its keep once real design/service/surface elevation data (12d
+// surfaces, services, IFC) was actually available to compare against —
+// see the README "Terrain" section. The satellite IMAGERY itself is
+// still useful visual context, so it stays — just draped flat
+// (ground-imagery.js) rather than over a fake sense of ground shape.
 //
 // TODO(later swap point): once the WebODM-based delivery platform (see
-// project memory) exposes a "latest terrain for site" endpoint, that
-// becomes the preferred source ahead of Mapbox Terrain-RGB (genuine
-// drone DSM/DTM beats coarse global data) — this surface is meant to be
-// periodically re-flighted and swapped, not a one-off static asset.
+// project memory) exposes a "latest terrain for site" endpoint, THAT
+// becomes the real elevation source to plug in here (genuine drone
+// DSM/DTM) — this file is still the one place to change when that
+// happens.
 
 import * as THREE from "three";
-import { getMapboxTerrain } from "./mapbox-terrain.js";
+import { getGroundImageryPlane } from "./ground-imagery.js";
 
 const REFERENCE_PLANE_SIZE_M = 200; // ~200m square, just for scale/orientation
 const TEST_COVER_DEPTH_M = 0.9; // Cameron, 2026-08-24: "~0.9m above the pipe" as a test default
@@ -36,25 +35,28 @@ const TEST_COVER_DEPTH_M = 0.9; // Cameron, 2026-08-24: "~0.9m above the pipe" a
  * scene metres relative to `originMga` (an [easting, northing, ahd] point
  * used as the scene's (0,0,0)).
  *
+ * No real elevation source exists yet (see header) — this is a flat
+ * plane either way, textured with satellite imagery if a Mapbox token is
+ * configured, plain wireframe grey otherwise.
+ *
  * @param {string} siteId - e.g. "K2"
  * @param {[number, number, number]} originMga - GDA2020/MGA50 [E, N, AHD] scene origin
- * @returns {Promise<{ mesh: THREE.Mesh, source: "placeholder"|"mapbox-terrain-rgb"|"geotiff"|"webodm", warning?: string }>}
+ * @returns {Promise<{ mesh: THREE.Mesh, source: "placeholder"|"mapbox-satellite-flat"|"geotiff"|"webodm", warning?: string }>}
  */
 export async function getCurrentTerrain(siteId, originMga) {
   const token = import.meta.env.VITE_MAPBOX_TOKEN;
   if (token) {
     try {
-      const { mesh, minAhd, maxAhd, zoom } = await getMapboxTerrain(originMga, token);
+      const { mesh } = await getGroundImageryPlane(originMga, token);
       return {
         mesh,
-        source: "mapbox-terrain-rgb",
+        source: "mapbox-satellite-flat",
         warning:
-          `Mapbox Terrain-RGB (zoom ${zoom}), elevation range ${minAhd.toFixed(1)}–` +
-          `${maxAhd.toFixed(1)}m AHD. COARSE GLOBAL DATA, not a drone survey — ` +
-          "swap for a real DSM/DTM before any real excavation/clash assessment.",
+          "Flat ground plane, satellite imagery only — NO elevation data. " +
+          "Real design/service/surface elevation comes from loaded 12d/IFC data instead.",
       };
     } catch (err) {
-      console.error("[terrain] Mapbox terrain fetch failed, falling back to flat plane:", err);
+      console.error("[terrain] Mapbox imagery fetch failed, falling back to flat plane:", err);
       // fall through to the flat-plane fallback below
     }
   }
@@ -63,11 +65,10 @@ export async function getCurrentTerrain(siteId, originMga) {
     mesh: buildReferencePlane(),
     source: "placeholder",
     warning: token
-      ? "NO TERRAIN DATA — Mapbox fetch failed (see console), flat reference " +
+      ? "NO GROUND IMAGERY — Mapbox fetch failed (see console), flat reference " +
         "plane at site datum only."
-      : "NO TERRAIN DATA — flat reference plane at site datum only. " +
-        "No drone flight yet; VITE_MAPBOX_TOKEN not configured (see .env.local). " +
-        "Do not use for any real excavation/clash assessment.",
+      : "NO GROUND IMAGERY — flat reference plane at site datum only. " +
+        "VITE_MAPBOX_TOKEN not configured (see .env.local).",
   };
 }
 

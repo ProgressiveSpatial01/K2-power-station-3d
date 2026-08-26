@@ -11,8 +11,8 @@
 // surfacing if Cameron ever needs grid-exact numbers (see README).
 //
 // Section tool: draws a single line, then hands its coordinates to the
-// caller (main-2d.js), which fetches an elevation profile
-// (elevation-profile.js) and opens the split view.
+// caller (main-2d.js), which computes crossings against loaded design/
+// service data (section-intersect.js) and opens the split view.
 
 import MapboxDraw from "@mapbox/mapbox-gl-draw";
 import "@mapbox/mapbox-gl-draw/dist/mapbox-gl-draw.css";
