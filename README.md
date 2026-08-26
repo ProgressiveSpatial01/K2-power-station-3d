@@ -323,6 +323,22 @@ version bump (see comment block above `computeIfcPlacement()`).
 The dev UI logs this bounding box on every IFC load specifically so this
 check stays easy to repeat by eye.
 
+**Update 2026-08-26 — designs partially loading, "pipes cut off"**:
+Cameron hit a real bug loading a bigger design (`Sample_IFC.ifc`, 10
+footings, not the 3 originally tested) — `loadIfcFile()`'s wait-for-
+geometry check only waited for "at least one mesh has vertex data,"
+which worked for GT11 (a small file whose geometry lands in one shot)
+but grabbed a partial snapshot for anything whose geometry streams in
+over multiple waves, silently cutting off elements that arrived after
+the check passed. Fixed: now waits for the total vertex count across
+every mesh to hold stable across several consecutive polls, not just
+be non-zero once. Verified directly against the real file: load took a
+genuine 4.1 seconds (confirming this file does stream over time, unlike
+GT11), settled at 682 vertices across 2 meshes, and the resulting
+footprint (29.62 × 9.05 m) matches an independent ground-truth
+measurement taken straight from the raw IFC coordinates across all 10
+footings.
+
 ### 12d services import (`src/twelve-d.js`, `src/services.js`) — Phase B, started early
 
 Cameron supplied a real sample: `Sample 12d Pipe.12daz`, a K2 Power
