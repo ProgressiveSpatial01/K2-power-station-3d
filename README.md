@@ -363,9 +363,39 @@ assumed:
 - **Not yet implemented**: the brief's flat/assumed-depth *fallback* path
   (for DBYD-sourced GeoJSON with no invert data) — only the
   real-depth-from-12d path exists so far. `services.js` tags every mesh
-  `depthAccuracy: "surveyed"` and uses a distinct colour, ready for a
-  future `"assumed"` styling to sit alongside it, per the brief's request
-  that the two be visually distinguishable.
+  `depthAccuracy: "surveyed"`, ready for a future `"assumed"` tag to sit
+  alongside it once that path exists, per the brief's request that the
+  two be visually distinguishable.
+
+**Update 2026-08-26 — two real bugs, reported by Cameron as "pits seem
+to be joining up and the colours aren't coming through," both confirmed
+and fixed**:
+
+- **Colours**: the line layer was hardcoded to one flat colour for
+  every service, ignoring the real 12d `colour` field entirely. Fixing
+  that surfaced real colour values aren't all valid CSS on their own —
+  AutoCAD Color Index codes (`"acad 095"`), 12d's own `"<name> <number>"`
+  convention (`"blue 192"`), and at least one genuinely unrecognisable
+  value (`"vis rock3"`). `src/service-colour.js` `normalizeColour()`
+  handles all of these — see its header for exactly how, and where the
+  real ACI RGB values came from (looked up, not guessed). Verified live:
+  16 distinct real colours resolved from the real file, only 1 record
+  fell back to a neutral default.
+- **Pits joining up**: traced to records like `"power mh"` (205 points)
+  — not one continuous outline, but ~30 physically separate manhole rim
+  outlines (each ~8 points, <1m across) concatenated into one `data_3d`
+  array by the export, with no marker between them. Rendered as one
+  line, this draws long spurious lines connecting unrelated manholes.
+  `twelve-d.js` `splitOnGaps()` splits a record wherever consecutive
+  points are further apart than a threshold, picked from real
+  measurements (every within-cluster gap was <1m, every between-cluster
+  gap was >17m — not a fragile arbitrary cutoff). Verified: the real
+  205-point record splits into exactly 33 correct segments; the whole
+  800-record file produces 448 correct line features.
+
+Applied to both the 2D map and the 3D scene's `services.js` (same
+underlying bug there too) — the 3D fix hasn't been re-verified live
+given its separate known rendering issue (see "Known issues").
 - **Scope caveat**: this module only implements what the one sample
   needed (name/style/colour/closed/justify/diameter/data_3d). If a real
   K2 export has richer pipe attributes (material, node IL, grade) not
