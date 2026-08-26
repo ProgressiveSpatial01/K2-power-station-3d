@@ -451,6 +451,12 @@ function buildLineFeaturesFrom12d(records, layerKind) {
   let skippedShort = 0;
   const features = records.flatMap((r) => {
     const segments = splitOnGaps(r.centrelinePoints);
+    // Same per-record values reused across however many segments this one
+    // record split into — hoisted out of the per-segment map (2026-08-26,
+    // same fix as buildSurfaceFeaturesFrom12d(), see its comment for why:
+    // normalizeColour() does real work, not a cheap lookup).
+    const model = r.model ?? "(unlabelled)";
+    const normalizedColour = normalizeColour(r.colour);
     return segments
       .filter((seg) => {
         const ok = seg.length >= 2;
@@ -468,13 +474,13 @@ function buildLineFeaturesFrom12d(records, layerKind) {
         },
         properties: {
           name: r.name,
-          model: r.model ?? "(unlabelled)",
+          model,
           style: r.style ?? "(no style)",
           diameter: r.diameter,
           justify: r.justify,
           depthAccuracy: "surveyed",
           rawColour: r.colour,
-          colour: normalizeColour(r.colour),
+          colour: normalizedColour,
           layerKind,
         },
       }));
