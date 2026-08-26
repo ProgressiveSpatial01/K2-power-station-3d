@@ -56,10 +56,10 @@ export async function setupIfcLoader(components, world) {
 
 /**
  * Load an IFC File (from an <input type=file>) into the scene, and wait
- * until the resulting model's geometry has actually landed in the scene
+ * until the resulting model's geometry has FULLY landed in the scene
  * graph before resolving.
  *
- * IMPORTANT — two separate async gaps found empirically, not from docs:
+ * IMPORTANT — three separate async gaps found empirically, not from docs:
  *  1. `ifcLoader.load()`'s own promise resolves BEFORE the model is even
  *     added to the scene — you have to wait for the
  *     `fragments.list.onItemSet` event instead (same event
@@ -71,8 +71,19 @@ export async function setupIfcLoader(components, world) {
  *     right after onItemSet still came back zero-size, while the same
  *     check ~1.5s later (after that mesh had 600 verts and a bounding
  *     box exactly matching the IFC's own OverallLength/OverallWidth
- *     property values) was correct. So we additionally poll for real
- *     geometry to appear before resolving.
+ *     property values) was correct.
+ *  3. Geometry can arrive in MULTIPLE waves, not one shot — found
+ *     2026-08-26 (Cameron: "design seems to only partially load, pipes
+ *     cut off"). An earlier version of this function only waited for
+ *     "at least one mesh has vertex data," which worked for GT11 (a
+ *     small, few-solid file whose geometry seems to land essentially
+ *     atomically) but silently grabbed a partial snapshot for a bigger,
+ *     multi-element design whose geometry streams in over several
+ *     worker round-trips — the bounding box/footprint got computed from
+ *     whatever had arrived so far, cutting off elements that streamed
+ *     in afterward. Fixed by waiting for the total vertex count across
+ *     every mesh to hold STABLE across several consecutive polls,
+ *     rather than just non-zero once.
  *
  * Any caller that needs to measure/position the model (as
  * computeIfcPlacement() below does) MUST go through this function, not
@@ -108,28 +119,66 @@ export async function loadIfcFile(components, ifcLoader, file, modelId = `design
   return { model, buffer };
 }
 
-/** Poll until `object3d` contains at least one mesh with vertex data. */
-function waitForGeometry(object3d, { timeoutMs = 8000, pollMs = 50 } = {}) {
-  const hasGeometry = () => {
-    let found = false;
-    object3d.traverse((child) => {
-      if (child.isMesh && child.geometry?.attributes?.position?.count > 0) {
-        found = true;
-      }
-    });
-    return found;
-  };
+/** Total vertex count and mesh count across every mesh in `object3d`. */
+function countGeometry(object3d) {
+  let vertexCount = 0;
+  let meshCount = 0;
+  object3d.traverse((child) => {
+    if (child.isMesh && child.geometry?.attributes?.position) {
+      vertexCount += child.geometry.attributes.position.count;
+      meshCount++;
+    }
+  });
+  return { vertexCount, meshCount };
+}
 
+/**
+ * Poll until `object3d`'s total vertex count (across every mesh, not
+ * just the first one) stops growing — see the async-gap #3 note above
+ * for why "at least one mesh has data" isn't enough for a multi-element
+ * design whose geometry streams in over several waves.
+ */
+function waitForGeometry(object3d, { timeoutMs = 20000, pollMs = 150, stableRounds = 3 } = {}) {
   return new Promise((resolve, reject) => {
-    if (hasGeometry()) return resolve();
     const start = performance.now();
+    let lastCount = -1;
+    let stableStreak = 0;
+
     const interval = setInterval(() => {
-      if (hasGeometry()) {
+      const { vertexCount, meshCount } = countGeometry(object3d);
+      const elapsed = performance.now() - start;
+
+      if (vertexCount > 0 && vertexCount === lastCount) {
+        stableStreak++;
+      } else {
+        stableStreak = 0;
+      }
+      lastCount = vertexCount;
+
+      if (stableStreak >= stableRounds) {
         clearInterval(interval);
         resolve();
-      } else if (performance.now() - start > timeoutMs) {
+        return;
+      }
+
+      if (elapsed > timeoutMs) {
         clearInterval(interval);
-        reject(new Error(`Timed out waiting for IFC geometry to populate (>${timeoutMs}ms).`));
+        if (vertexCount > 0) {
+          // Still growing (or just settled this instant) when we ran
+          // out of patience. Proceeding with whatever's arrived so far
+          // is the same "might be cut off" risk this function exists to
+          // avoid — but blocking forever, or failing outright on a model
+          // that IS fully loaded and just slow, is worse. Logged loudly
+          // so a truncated result is at least traceable.
+          console.warn(
+            `[ifc] Geometry vertex count didn't settle within ${timeoutMs}ms ` +
+              `(${meshCount} mesh(es), ${vertexCount} verts, still possibly growing) — ` +
+              "proceeding anyway. If the design looks cut off, this timeout may need raising."
+          );
+          resolve();
+        } else {
+          reject(new Error(`Timed out waiting for IFC geometry to populate (>${timeoutMs}ms).`));
+        }
       }
     }, pollMs);
   });
