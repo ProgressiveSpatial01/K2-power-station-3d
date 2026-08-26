@@ -402,12 +402,43 @@ and fixed**:
   outlines (each ~8 points, <1m across) concatenated into one `data_3d`
   array by the export, with no marker between them. Rendered as one
   line, this draws long spurious lines connecting unrelated manholes.
-  `twelve-d.js` `splitOnGaps()` splits a record wherever consecutive
-  points are further apart than a threshold, picked from real
-  measurements (every within-cluster gap was <1m, every between-cluster
-  gap was >17m — not a fragile arbitrary cutoff). Verified: the real
-  205-point record splits into exactly 33 correct segments; the whole
-  800-record file produces 448 correct line features.
+  `twelve-d.js` `splitOnGaps()` splits a record wherever a gap qualifies
+  as a split point — see the correction below for what that actually
+  means; the version below was wrong.
+
+**Correction, same day**: the first `splitOnGaps()` split on ANY gap
+over a flat 3m threshold, validated only against the giant concatenated
+-pit records. Cameron compared the 3D scene against the same file
+opened in real 12d and found a dense, continuous network there vs.
+scattered disconnected fragments in ours — correctly called out as
+wrong, not a framing/zoom difference. Checked against ordinary
+pipe/cable records this time (`"COMMS UG PIPE 100"`, `"earth ug line"`)
+and found their normal, legitimate vertex spacing is 3–25m — well past
+3m, so real continuous alignments were being shattered into isolated
+single points and vanishing from the map entirely. Worse, the two cases
+genuinely overlap in absolute distance (one legitimate alignment's
+largest real gap, 17.4m, is bigger than one concatenated-manhole
+record's smallest between-cluster jump, 16.2m) — no fixed distance
+cutoff can separate them.
+
+Fixed with a **relative** test instead: a gap only counts as a split
+point if it's both more than an absolute floor (3m) **and** more than
+8× that record's own median gap (median, not mean, so the handful of
+huge jumps it's trying to detect don't drag it around). This works
+because the two cases differ in *shape*, not scale — concatenated-pit
+records have many tiny (<1m) gaps and a few extreme outlier jumps;
+genuine alignments have fairly uniform, moderate gaps throughout.
+Verified against every case that mattered: `"COMMS UG PIPE 100"` and
+`"earth ug line"` now correctly stay as one segment each; `"power mh"`
+(205 pts), `"comms manhole"` (29 pts), `"drain sidepit"` (16 pts) still
+correctly split into their real separate clusters. Across the whole
+file, renderable segments went from 448 (broken flat-threshold version)
+to **737** — meaning ~289 real segments were being destroyed by the
+earlier over-splitting. Swept the whole file afterward for any
+remaining suspiciously long single segment (would indicate an
+undetected concatenation still slipping through) — longest is a
+plausible 201m, 6-point earthing run at an industrial site, not a red
+flag.
 
 Applied to both the 2D map and the 3D scene's `services.js` (same
 underlying bug there too) — the 3D fix hasn't been re-verified live
