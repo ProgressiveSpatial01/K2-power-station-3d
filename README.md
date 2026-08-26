@@ -16,8 +16,10 @@ and data. That repo is referenced only for UI/workflow patterns (layer
 control structure, KML upload flow) and is the direct visual/UX
 inspiration for the 2D shell here.
 
-Status: **2D map working end-to-end** (real IFC base point + real 12d
-services both plot correctly on real Mapbox imagery — verified). **3D
+Status: **2D map working end-to-end**, now validated against real,
+much larger data (2026-08-26): a real 800-record weekly 12d services
+export, and a real IFC design with a georeferencing pattern not seen
+before (no `IFCMAPCONVERSION` at all — see "IFC 2D footprint"). **3D
 scene has a known rendering issue** — see "Known issues" — currently
 lower priority since 2D is now the primary shell, but not forgotten.
 Underlying data/logic (CRS, IFC georeferencing, 12d parsing, Mapbox
@@ -169,13 +171,37 @@ both reproduced, one confirmed fixed, one not yet re-confirmed, see below):
    graph — surfaced as a generic-looking `RangeError: Maximum call stack
    size exceeded` inside `Box3.setFromObject`'s recursive traversal, not
    an obviously-IFC-related error. Fixed: `modelId` now defaults to a
-   fresh id per call. **NOT yet re-confirmed live** — hit the render-loop
-   -suspension environment limitation (see "Known issues") right as I
-   went to retest it. The fix is sound by inspection (JS default
-   parameters re-evaluate per call, so uniqueness is guaranteed), but
-   **needs Cameron to confirm**: load two different IFC files (or the
-   same one twice) in one page session and check neither the console nor
-   the map breaks.
+   fresh id per call. **Confirmed fixed 2026-08-26** — specifically
+   re-tested loading two different real IFC files (GT11's + a new
+   design, "Sample IFC.ifc") in one session; no recurrence.
+
+### IFC files with no `IFCMAPCONVERSION` at all (`ifc.js resolveCoordinationOffset()`)
+
+A third georeferencing pattern, found 2026-08-26 in a real design file
+("Sample IFC.ifc", GT11 Stack Foundation) — different from both GT11's
+own `IfcMapConversion`-offset approach and the "K2 Plant Grid" local-CRS
+case above: **no `IFCMAPCONVERSION` entity at all**, with real MGA50
+coordinates baked directly into the geometry's `IFCCARTESIANPOINT`
+values instead. Handled by leaning on `@thatopen/components`' own answer
+to the same large-coordinate precision problem as bug #1 above:
+`IfcLoader` defaults `settings.webIfc.COORDINATE_TO_ORIGIN` to `true`
+(confirmed by reading the installed package source — docs on this
+specific setting were thin), which re-centres large coordinates near the
+origin internally during parsing and exposes what it subtracted via
+`model.getCoordinationMatrix()`.
+
+**Real wrinkle, not theoretical**: `@thatopen/components`' own
+`getCoordinationMatrix()` wrapper does NOT put `[easting, northing,
+height]` in `matrix.elements[12,13,14]` the way web-ifc's own examples
+would suggest — tested against this file's known real coordinates
+(~E384928, ~N6434079, ~H5.55) and got back `(-easting, -height,
+northing)`. The extraction in `resolveCoordinationOffset()` is
+documented as empirically-derived from that test, not from docs/source,
+since it may not generalise to every axis/rotation configuration.
+**Verified working**: placed at MGA50 E384928.653 N6434079.441 — an
+exact match to the file's own first vertex — with a footprint outline
+computing out to a plausible ~30m × 9m for a multi-footing stack
+foundation.
 
 ### Deviation from brief: `web-ifc-three` → `@thatopen/components`
 
@@ -323,6 +349,34 @@ assumed:
   extending the 12d parser further. Worth keeping in mind before
   over-investing in 12d parser generality.
 
+**Update 2026-08-26, tested against a real 800-record weekly export**
+("260826 Service Upload.12daz") — much bigger and richer than the
+original 2-record sample, and it broke the parser in three new ways,
+all fixed generically rather than special-cased (none of this data is
+actually read, it just needs to not crash on it):
+- `text "name" "value"` / `real "name" 0` / `integer "name" 5` — 3-token
+  "typed attribute" statements inside `attributes`/`group` blocks.
+- `point_data { "0013" "0014" ... }` — a flat list of quoted strings,
+  not key/value pairs.
+- `data_2d { E N }` — 2D-only points (symbol/survey pickups, no
+  elevation) alongside `data_3d`. Records with only `data_2d` have <2
+  centreline points and get filtered out before building map features
+  (would otherwise be an invalid GeoJSON LineString) — 136/800 in the
+  real file, logged rather than silently dropped.
+
+**Also found**: `model "path"` is a bare top-level statement, not a
+block — every `string` that follows belongs to whichever `model` was
+last declared, until the next one. The original generic parser's
+unordered accumulation lost this association entirely; the top-level
+loop now preserves document order and tracks it (`parse12da()`). This
+mattered more than expected: in the real file, `style` is nearly
+useless for grouping (734/800 records are just `style: "1"`), while
+`model` gives real discipline categories (Sewer, Water, Power/High
+Voltage, Power/Low Voltage, Drainage, Communications, Earthing, Gas,
+Fuel Line). **The 2D sidebar now groups services by `model`, not
+`style`.** Verified: both the small sample and the 800-record file
+parse correctly, with the model breakdown summing to exactly 800.
+
 ### Terrain (`src/terrain.js`, `src/mapbox-terrain.js`) — Mapbox live, real drone DSM still pending
 
 Cameron confirmed (2026-08-24): **no drone flight exists yet for K2**,
@@ -404,8 +458,14 @@ cut view, not a real terrain source. Verified: real sample pipes average
     geometry (marked in its own metadata as AI-generated from supplied
     drawings, "reference only," not for construction/fabrication —
     treat as a stand-in for a real design export, not the real thing).
+  - `ifc/Sample_IFC.ifc` — a different, real K2 design (GT11 Stack
+    Foundation, 12d Model-exported), notable for having no
+    `IFCMAPCONVERSION` at all — see "IFC files with no IFCMAPCONVERSION."
   - `12d/Sample 12d Pipe.12daz` (+ `12d/extracted/` — unzipped for
-    inspection) — real K2 Power Station Services export.
+    inspection) — the original small (2-record) sample export.
+  - `12d/weekly-260826/260826 Service Upload.12daz` — a real, much
+    larger (800-record) weekly services export — see "12d services
+    import" for what parsing this against real data surfaced.
   Never commit real client data to this repo's git history, even
   privately — treat it the same as the "never store or log client data
   outside the local stack" rule from the wider platform work.
