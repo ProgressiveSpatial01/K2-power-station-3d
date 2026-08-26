@@ -617,6 +617,33 @@ parsed, 8 correctly excluded as scaffold, 2 kept — real MGA50
 coordinates at the K2 site, RL 6.33-7.53m, converted to valid WGS84
 polygon rings.
 
+**Update, same day — surfaces keyed by upload, not internal name.**
+Cameron: "we will need the actual geometry on that 2d page as the idea
+will be upload surfaces to compare e.g monthly drone flights." The
+intended workflow is uploading multiple dated surfaces (e.g. one per
+month's drone flight) and comparing them — which means every upload
+needs to stay independently identifiable in the sidebar, even though the
+one real sample is literally named "12d Quick Tin," 12d's own generic
+default. Keying the sidebar row/toggle/filter on the surface's own
+internal `name` alone would silently MERGE two different months' data
+into one indistinguishable entry the moment 12d gave them the same (or
+any duplicate) name. Fixed by introducing `surfaceId` — the uploaded
+file's name plus the surface's internal name (`buildSurfaceFeaturesFrom12d()`,
+`createSurfaceFeatureController()`) — as the actual grouping/filter key
+everywhere (sidebar rows, map filter, section-view chord labelling),
+while still displaying the internal name and source file separately in
+popups. Verified: simulated uploading the same real sample file twice
+under two different names (as if "August_DTM.12daz" and
+"September_DTM.12daz") — both internally named "12d Quick Tin" — and
+confirmed they now produce two distinct, independently toggleable
+surface entries rather than merging into one.
+
+**Not yet built**: an actual compare/diff tool between two loaded
+surfaces (elevation delta, cut/fill volumes) — today's fix only ensures
+multiple surfaces can coexist and be told apart. Real comparison
+tooling is future work once this foundation is confirmed useful — see
+"Open items."
+
 ### Section view now shows crossing layers (`src/section-intersect.js`) (2026-08-26)
 
 Per Cameron: **"need to be able to see these layers on the section view
@@ -820,3 +847,11 @@ cut view, not a real terrain source. Verified: real sample pipes average
     page starts keeping the actual loaded IFC mesh around (it currently
     only tracks a bounding-box footprint) — flag if this matters enough
     to prioritise.
+11. **Surface compare/diff tooling** — Cameron's stated intended workflow
+    is uploading multiple dated surfaces (e.g. monthly drone flights) to
+    compare (see "surfaces keyed by upload, not internal name"). Multiple
+    surfaces can now coexist and be told apart, but there's no actual
+    comparison feature yet — worth scoping with Cameron what "compare"
+    should mean in practice (a simple two-surface visibility toggle vs. a
+    real elevation-delta/cut-fill-volume calculation, which is a
+    meaningfully bigger feature) before building it.

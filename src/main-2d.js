@@ -502,34 +502,46 @@ function fitMapToFeatures(features) {
 /**
  * Controller for a "12d full_tin surface(s), rendered as a triangle mesh"
  * layer — structurally simpler than createLineFeatureController() since
- * surfaces don't have a `model` hierarchy worth a nested tree (a real
- * design usually has a handful of named surfaces, not hundreds of
- * records); one flat sidebar row per surface name is enough for now,
- * toggling that surface's triangles via a `surfaceName` filter.
+ * surfaces don't have a `model` hierarchy worth a nested tree; one flat
+ * sidebar row per surface is enough for now, toggling via a `surfaceId`
+ * filter.
+ *
+ * Keyed on `surfaceId`, NOT the surface's own internal `name` (2026-08-26,
+ * per Cameron: uploading multiple dated surfaces — e.g. monthly drone
+ * flights — to compare against each other is the actual intended
+ * workflow). The one real sample seen so far is literally named "12d
+ * Quick Tin", 12d's own generic default — real exports could very
+ * plausibly reuse that same generic name (or any other name) across
+ * separate flights/uploads, which would silently MERGE two different
+ * months' surfaces into one indistinguishable, un-independently-
+ * toggleable sidebar entry if keyed on name alone. `surfaceId` combines
+ * the uploaded file's name with the surface's internal name instead — see
+ * buildSurfaceFeaturesFrom12d() — so every upload gets its own row even
+ * if 12d gave the surface itself an identical (or generic) name.
  */
 function createSurfaceFeatureController({ sourceId, fillLayerId, lineLayerId, group, popupHtml }) {
   const allFeatures = [];
-  const knownSurfaceNames = new Set();
+  const knownSurfaceIds = new Set();
   const checkedSurfaces = new Set();
 
   function applyFilter() {
-    map.setFilter(fillLayerId, ["in", ["get", "surfaceName"], ["literal", [...checkedSurfaces]]]);
-    map.setFilter(lineLayerId, ["in", ["get", "surfaceName"], ["literal", [...checkedSurfaces]]]);
+    map.setFilter(fillLayerId, ["in", ["get", "surfaceId"], ["literal", [...checkedSurfaces]]]);
+    map.setFilter(lineLayerId, ["in", ["get", "surfaceId"], ["literal", [...checkedSurfaces]]]);
   }
 
   function addSidebarRowsIfNeeded(newFeatures) {
     for (const f of newFeatures) {
-      const name = f.properties.surfaceName;
-      if (knownSurfaceNames.has(name)) continue;
-      knownSurfaceNames.add(name);
-      checkedSurfaces.add(name);
+      const id = f.properties.surfaceId;
+      if (knownSurfaceIds.has(id)) continue;
+      knownSurfaceIds.add(id);
+      checkedSurfaces.add(id);
       group.addRow({
-        label: name,
+        label: id,
         color: f.properties.colour,
         checked: true,
         onChange: (checked) => {
-          if (checked) checkedSurfaces.add(name);
-          else checkedSurfaces.delete(name);
+          if (checked) checkedSurfaces.add(id);
+          else checkedSurfaces.delete(id);
           applyFilter();
         },
       });
@@ -574,7 +586,7 @@ function createSurfaceFeatureController({ sourceId, fillLayerId, lineLayerId, gr
     },
     /** See createLineFeatureController()'s getVisibleFeatures() — same idea. */
     getVisibleFeatures() {
-      return allFeatures.filter((f) => checkedSurfaces.has(f.properties.surfaceName));
+      return allFeatures.filter((f) => checkedSurfaces.has(f.properties.surfaceId));
     },
   };
 }
@@ -585,7 +597,7 @@ const designSurfaceController = createSurfaceFeatureController({
   lineLayerId: "design-surface-line-layer",
   group: designSurfaceGroup,
   popupHtml: (p) =>
-    `<b>${p.surfaceName}</b><br>${p.model ?? ""}<br>` +
+    `<b>${p.surfaceName}</b> (${p.sourceFile})<br>${p.model ?? ""}<br>` +
     `RL ${p.minZ.toFixed(3)}–${p.maxZ.toFixed(3)} AHD (this triangle)<br>` +
     `Colour: ${p.rawColour ?? "?"}<br>` +
     "12d full_tin surface — triangle mesh, not interpolated contours.",
@@ -599,8 +611,16 @@ const designSurfaceController = createSurfaceFeatureController({
  * from this one sample's geometry as "auto-bounding scaffold, not real
  * design data", not from any 12d spec; ask Cameron before trusting this
  * on a differently-shaped surface export).
+ *
+ * @param {string} sourceFileName - the uploaded file's name, used (with
+ *   the surface's own internal `name`) to build a `surfaceId` that stays
+ *   unique across separate uploads even when 12d gives two different
+ *   surfaces the same (or a generic, e.g. "12d Quick Tin") internal name
+ *   — see createSurfaceFeatureController()'s docstring for why that
+ *   matters (comparing multiple dated surfaces, e.g. monthly drone
+ *   flights, is the actual intended use).
  */
-function buildSurfaceFeaturesFrom12d(surfaces) {
+function buildSurfaceFeaturesFrom12d(surfaces, sourceFileName) {
   let excludedScaffold = 0;
   const features = surfaces.flatMap((surf) =>
     surf.triangles
@@ -622,11 +642,14 @@ function buildSurfaceFeaturesFrom12d(surfaces) {
         });
         ring.push(ring[0]); // close the polygon ring
         const elevations = verts.map(([, , z]) => z);
+        const surfaceName = surf.name ?? "(unnamed surface)";
         return {
           type: "Feature",
           geometry: { type: "Polygon", coordinates: [ring] },
           properties: {
-            surfaceName: surf.name ?? "(unnamed surface)",
+            surfaceId: `${sourceFileName} — ${surfaceName}`,
+            surfaceName,
+            sourceFile: sourceFileName,
             model: surf.model ?? "(unlabelled)",
             rawColour: surf.colour,
             // 12d's "shade NN" display setting isn't a real colour (and
@@ -875,7 +898,7 @@ async function handleDesign12dFile(file) {
     }
 
     if (hasSurfaces) {
-      const { features, excludedScaffold } = buildSurfaceFeaturesFrom12d(records.surfaces);
+      const { features, excludedScaffold } = buildSurfaceFeaturesFrom12d(records.surfaces, file.name);
       if (excludedScaffold > 0) {
         console.warn(
           `[K2-2D] Excluded ${excludedScaffold} triangle(s) inferred as auto-bounding-box ` +

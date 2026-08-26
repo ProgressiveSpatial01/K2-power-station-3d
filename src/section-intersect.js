@@ -145,7 +145,12 @@ export function computeSectionCrossings(sectionCoordsWgs84, { lineFeatures = [],
   const surfaceChords = surfaceFeatures
     .map((f) => ({
       points: crossingsForTriangle(sectionCoordsWgs84, sectionCum, f),
-      surfaceName: f.properties.surfaceName,
+      // surfaceId (file name + internal name), not the bare internal
+      // name — see createSurfaceFeatureController()'s docstring in
+      // main-2d.js: two different uploaded surfaces (e.g. two different
+      // months' drone flights) can share the same generic internal 12d
+      // name, and the tooltip needs to actually distinguish them.
+      surfaceName: f.properties.surfaceId ?? f.properties.surfaceName,
       colour: f.properties.colour,
     }))
     .filter((chord) => chord.points.length >= 2);
