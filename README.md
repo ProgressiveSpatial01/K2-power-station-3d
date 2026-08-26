@@ -440,6 +440,21 @@ undetected concatenation still slipping through) — longest is a
 plausible 201m, 6-point earthing run at an industrial site, not a red
 flag.
 
+**Second correction, later the same day**: Cameron still saw "a few
+rogue pits joining up." One global median per record wasn't always
+enough — a record with more than one genuine scale of internal
+clustering could end up with a record-wide median that didn't cleanly
+separate every jump from every cluster's own spacing. Fixed by finding
+and splitting at the single WORST outlier gap first, then recursing
+into each half with its own freshly-computed local median, rather than
+measuring every gap against one global baseline in a single pass.
+Re-verified every case above plus a broader sweep this time — checked
+every resulting segment across the whole file for any remaining
+internal outlier, not just the specific records already known about:
+zero remaining. Some records resolved more precisely than before (e.g.
+a 16-point "drain sidepit" was `[8,8]` under the single-pass version,
+missing an internal split, and is now correctly `[8,4,4]`).
+
 Applied to both the 2D map and the 3D scene's `services.js` (same
 underlying bug there too) — the 3D fix hasn't been re-verified live
 given its separate known rendering issue (see "Known issues").
