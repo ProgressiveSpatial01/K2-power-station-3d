@@ -172,6 +172,10 @@
         </div>
       </div>
     </div>
+    <!-- Offscreen container for the headless @thatopen/components engine
+         used to read real IFC footprint geometry (not rendered visibly
+         here — see main-2d.js's IFC footprint code). -->
+    <div id="ifc-offscreen" style="position: absolute; left: -9999px; top: 0; width: 1px; height: 1px; overflow: hidden;"></div>
     <script type="module" src="/src/main-2d.js"></script>
   </body>
 </html>

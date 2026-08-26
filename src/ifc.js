@@ -20,6 +20,7 @@
 // working CRS in crs.js.
 
 import * as OBC from "@thatopen/components";
+import * as THREE from "three";
 import { mgaToScene } from "./crs.js";
 
 /**
@@ -76,8 +77,20 @@ export async function setupIfcLoader(components, world) {
  * Any caller that needs to measure/position the model (as
  * computeIfcPlacement() below does) MUST go through this function, not
  * call ifcLoader.load() directly.
+ *
+ * `modelId` defaults to a fresh id per call (not a fixed "design"
+ * string) — found by hitting it directly: loading a second IFC file in
+ * the same page session under a REUSED id corrupted the FragmentsManager
+ * /scene graph (some prior model's object ended up parented into a
+ * cycle), which surfaced as a `RangeError: Maximum call stack size
+ * exceeded` inside `Box3.setFromObject`'s recursive traversal — a
+ * generic-looking error that took some digging to trace back to this.
+ * If you ever need a *stable* id across reloads of the same design
+ * (e.g. to explicitly replace/dispose a specific model), pass one
+ * explicitly and make sure to dispose the old model first.
  */
-export async function loadIfcFile(components, ifcLoader, file, modelId = "design") {
+let modelIdCounter = 0;
+export async function loadIfcFile(components, ifcLoader, file, modelId = `design-${Date.now()}-${modelIdCounter++}`) {
   const buffer = new Uint8Array(await file.arrayBuffer());
   const fragments = components.get(OBC.FragmentsManager);
 
@@ -278,4 +291,37 @@ export function computeIfcPlacement(georef, sceneOriginMga) {
   }
 
   return { position, rotationY };
+}
+
+/**
+ * Compute a real (if approximate) 2D footprint for an already-placed
+ * model, as an axis-aligned bounding-box outline in scene XZ — i.e. the
+ * horizontal-plane bounding box of the model's world-space geometry
+ * (which, after computeIfcPlacement() has positioned/rotated it, is a
+ * real MGA-relative axis-aligned rectangle, not a local-space one).
+ *
+ * Used for the 2D map, which previously only had a single project-base-
+ * point marker (see README "2D IFC footprint") — a bounding rectangle is
+ * a much better outline than a point, and reuses the exact bounding-box
+ * logic already verified against GT11 (its rectangle matches
+ * Pset_GT11_MainFoundation.OverallLength/OverallWidth exactly). It's
+ * NOT a true footprint polygon for non-rectangular or rotated designs —
+ * an axis-aligned box around a rotated building would be looser than
+ * the building's actual outline. Worth upgrading to a real 2D convex
+ * hull (or the actual plan profile) if that gap matters in practice;
+ * flagged rather than silently treated as exact.
+ *
+ * @param {*} model - the loaded model from loadIfcFile(), already
+ *   positioned/rotated via computeIfcPlacement()
+ * @returns {Array<[number, number]>} 4 corners [x, z] in scene metres,
+ *   winding order: (minX,minZ) (maxX,minZ) (maxX,maxZ) (minX,maxZ)
+ */
+export function computeFootprintCornersScene(model) {
+  const box = new THREE.Box3().setFromObject(model.object);
+  return [
+    [box.min.x, box.min.z],
+    [box.max.x, box.min.z],
+    [box.max.x, box.max.z],
+    [box.min.x, box.max.z],
+  ];
 }

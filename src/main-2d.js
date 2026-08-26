@@ -20,8 +20,15 @@
 
 import mapboxgl from "mapbox-gl";
 import "mapbox-gl/dist/mapbox-gl.css";
-import { mga50ToWgs84 } from "./crs.js";
-import { extractGeoreference } from "./ifc.js";
+import * as OBC from "@thatopen/components";
+import { mga50ToWgs84, sceneToMga } from "./crs.js";
+import {
+  extractGeoreference,
+  setupIfcLoader,
+  loadIfcFile,
+  computeIfcPlacement,
+  computeFootprintCornersScene,
+} from "./ifc.js";
 import { loadTwelveDaFile } from "./twelve-d.js";
 import { createLayerGroup } from "./layer-tree.js";
 import { createDrawTools } from "./draw-tools.js";
@@ -67,10 +74,33 @@ map.addControl(new mapboxgl.NavigationControl(), "bottom-right");
 // map.setStyle() — see wireBaseStyleGroup()).
 const state = {
   ifcFeature: null,
+  ifcFootprintFeature: null,
   ifcRowAdded: false,
   serviceFeatures: [],
   checkedServiceStyles: new Set(),
 };
+
+// Headless @thatopen/components engine, lazily set up on first IFC load
+// (so picking a 12d file or just browsing the map doesn't pay for
+// spinning up the IFC/WASM pipeline). Renders into a 1x1 offscreen div
+// (see index.html #ifc-offscreen) — we only need it to compute real
+// geometry (a bounding-box footprint), never to display anything;
+// Box3.setFromObject() doesn't care that nothing is actually visible.
+let ifcEngine = null;
+async function getIfcEngine() {
+  if (ifcEngine) return ifcEngine;
+  const components = new OBC.Components();
+  const worlds = components.get(OBC.Worlds);
+  const world = worlds.create();
+  world.scene = new OBC.SimpleScene(components);
+  world.renderer = new OBC.SimpleRenderer(components, document.getElementById("ifc-offscreen"));
+  world.camera = new OBC.OrthoPerspectiveCamera(components);
+  components.init();
+  world.scene.setup();
+  const { ifcLoader } = await setupIfcLoader(components, world);
+  ifcEngine = { components, ifcLoader };
+  return ifcEngine;
+}
 
 const layerTreeEl = document.getElementById("layer-tree");
 const baseGroup = createLayerGroup(layerTreeEl, { label: "Base Map" });
@@ -130,44 +160,91 @@ function wireBaseStyleGroup() {
 
 /** Re-add every custom source/layer currently held in `state`. Safe to call repeatedly. */
 function addCustomLayers() {
-  if (state.ifcFeature) addOrUpdateIfcLayer(state.ifcFeature);
+  if (state.ifcFeature) addOrUpdateIfcLayer(state.ifcFeature, state.ifcFootprintFeature);
   if (state.serviceFeatures.length > 0) addOrUpdateServicesLayer(state.serviceFeatures);
 }
 
-function addOrUpdateIfcLayer(feature) {
-  const sourceId = "ifc-design-point";
-  const layerId = "ifc-design-point-layer";
-  const data = { type: "FeatureCollection", features: [feature] };
+const POINT_SOURCE_ID = "ifc-design-point";
+const POINT_LAYER_ID = "ifc-design-point-layer";
+const FOOTPRINT_SOURCE_ID = "ifc-design-footprint";
+const FOOTPRINT_FILL_LAYER_ID = "ifc-design-footprint-fill";
+const FOOTPRINT_LINE_LAYER_ID = "ifc-design-footprint-line";
 
-  if (map.getSource(sourceId)) {
-    map.getSource(sourceId).setData(data);
-    return;
+/**
+ * @param {GeoJSON.Feature} pointFeature - the project base point (always available)
+ * @param {GeoJSON.Feature | null} footprintFeature - the bounding-box outline
+ *   (see ifc.js computeFootprintCornersScene) — null if it couldn't be computed
+ *   (e.g. IFC geometry load failed), in which case only the point is shown.
+ */
+function addOrUpdateIfcLayer(pointFeature, footprintFeature) {
+  const pointData = { type: "FeatureCollection", features: [pointFeature] };
+
+  if (map.getSource(POINT_SOURCE_ID)) {
+    map.getSource(POINT_SOURCE_ID).setData(pointData);
+  } else {
+    map.addSource(POINT_SOURCE_ID, { type: "geojson", data: pointData });
+    map.addLayer({
+      id: POINT_LAYER_ID,
+      type: "circle",
+      source: POINT_SOURCE_ID,
+      paint: {
+        "circle-radius": 6,
+        "circle-color": "#ffb454",
+        "circle-stroke-color": "#000",
+        "circle-stroke-width": 2,
+      },
+    });
+    map.on("click", POINT_LAYER_ID, (e) => {
+      const p = e.features[0].properties;
+      new mapboxgl.Popup()
+        .setLngLat(e.lngLat)
+        .setHTML(
+          `<b>${p.name}</b><br>IFC project base point<br>` +
+            `${p.crsName ?? "CRS unknown"}<br>` +
+            `E ${p.eastingOffset} N ${p.northingOffset}<br>RL ${p.heightOffset} AHD`
+        )
+        .addTo(map);
+    });
   }
 
-  map.addSource(sourceId, { type: "geojson", data });
-  map.addLayer({
-    id: layerId,
-    type: "circle",
-    source: sourceId,
-    paint: {
-      "circle-radius": 8,
-      "circle-color": "#ffb454",
-      "circle-stroke-color": "#000",
-      "circle-stroke-width": 2,
-    },
-  });
-  map.on("click", layerId, (e) => {
-    const p = e.features[0].properties;
-    new mapboxgl.Popup()
-      .setLngLat(e.lngLat)
-      .setHTML(
-        `<b>${p.name}</b><br>IFC project base point<br>` +
-          `${p.crsName ?? "CRS unknown"}<br>` +
-          `E ${p.eastingOffset} N ${p.northingOffset}<br>RL ${p.heightOffset} AHD<br>` +
-          `<i>Only a marker — no design geometry shown in 2D yet, see 3D view.</i>`
-      )
-      .addTo(map);
-  });
+  if (footprintFeature) {
+    const footprintData = { type: "FeatureCollection", features: [footprintFeature] };
+    if (map.getSource(FOOTPRINT_SOURCE_ID)) {
+      map.getSource(FOOTPRINT_SOURCE_ID).setData(footprintData);
+    } else {
+      map.addSource(FOOTPRINT_SOURCE_ID, { type: "geojson", data: footprintData });
+      map.addLayer(
+        {
+          id: FOOTPRINT_FILL_LAYER_ID,
+          type: "fill",
+          source: FOOTPRINT_SOURCE_ID,
+          paint: { "fill-color": "#ffb454", "fill-opacity": 0.25 },
+        },
+        POINT_LAYER_ID // insert below the point layer so the base-point marker stays visibly on top
+      );
+      map.addLayer(
+        {
+          id: FOOTPRINT_LINE_LAYER_ID,
+          type: "line",
+          source: FOOTPRINT_SOURCE_ID,
+          paint: { "line-color": "#ffb454", "line-width": 2 },
+        },
+        POINT_LAYER_ID
+      );
+      map.on("click", FOOTPRINT_FILL_LAYER_ID, (e) => {
+        const p = e.features[0].properties;
+        new mapboxgl.Popup()
+          .setLngLat(e.lngLat)
+          .setHTML(
+            `<b>${p.name}</b><br>` +
+              "Axis-aligned bounding-box outline (not a true footprint " +
+              "polygon for rotated/non-rectangular designs — see " +
+              "ifc.js computeFootprintCornersScene())."
+          )
+          .addTo(map);
+      });
+    }
+  }
 
   // Guard against re-adding a duplicate sidebar row: this function reruns
   // its "create" branch every time a base-style switch wipes Mapbox's
@@ -176,10 +253,17 @@ function addOrUpdateIfcLayer(feature) {
   if (!state.ifcRowAdded) {
     state.ifcRowAdded = true;
     designGroup.addRow({
-      label: feature.properties.name,
+      label: pointFeature.properties.name,
       color: "#ffb454",
       checked: true,
-      onChange: (checked) => map.setLayoutProperty(layerId, "visibility", checked ? "visible" : "none"),
+      onChange: (checked) => {
+        const vis = checked ? "visible" : "none";
+        map.setLayoutProperty(POINT_LAYER_ID, "visibility", vis);
+        if (map.getLayer(FOOTPRINT_FILL_LAYER_ID)) {
+          map.setLayoutProperty(FOOTPRINT_FILL_LAYER_ID, "visibility", vis);
+          map.setLayoutProperty(FOOTPRINT_LINE_LAYER_ID, "visibility", vis);
+        }
+      },
     });
   }
 }
@@ -283,14 +367,68 @@ function wireIfcInput() {
         },
       };
       state.ifcFeature = feature;
-      addOrUpdateIfcLayer(feature);
-
+      addOrUpdateIfcLayer(feature, state.ifcFootprintFeature);
       map.flyTo({ center: [lon, lat], zoom: 18 });
       setStatus(
         `Placed ${file.name} at MGA50 E${georef.eastingOffset} N${georef.northingOffset} ` +
-          `(${georef.crsName ?? "CRS name not found"}). This is only the project base point, ` +
-          "not the design footprint — full 2D footprint extraction not implemented yet."
+          `(${georef.crsName ?? "CRS name not found"}). Loading design geometry for a real footprint…`
       );
+
+      // Compute a real footprint (bounding-box outline, see ifc.js
+      // computeFootprintCornersScene()) by actually loading the IFC's
+      // geometry through the same @thatopen/components pipeline the 3D
+      // page uses — first time this runs it fetches the web-ifc WASM,
+      // so expect a few seconds on the very first IFC load per session.
+      try {
+        const { components, ifcLoader } = await getIfcEngine();
+        const { model } = await loadIfcFile(components, ifcLoader, file);
+
+        // IMPORTANT: use the georef's OWN offset as the local origin
+        // (matching main.js's SCENE_ORIGIN_MGA pattern), not [0,0,0].
+        // First attempt used [0,0,0] on the theory that "scene" coords
+        // would then just equal true MGA — mathematically fine, but a
+        // real bug in practice: it positions the Three.js object at a
+        // ~6.4-million-unit translation, which blows past float32's
+        // precision for the ~10m-scale local geometry sitting on top of
+        // it (float32 has ~7 significant decimal digits; at 6.4 million
+        // the per-unit resolution is already <1m). Caught by checking
+        // the actual output coordinates: came back near Antarctica
+        // instead of Kwinana. Keeping the model near the ORIGIN during
+        // measurement (as the 3D page already correctly does) avoids
+        // this entirely — only convert back to real MGA at the very end.
+        const localOrigin = [georef.eastingOffset, georef.northingOffset, georef.heightOffset];
+        const placement = computeIfcPlacement(georef, localOrigin);
+        model.object.position.set(...placement.position); // ~[0,0,0]
+        model.object.rotation.y = placement.rotationY;
+
+        const corners = computeFootprintCornersScene(model); // [[x,z], ...] small scene units, safe precision
+        const ring = corners.map(([x, z]) => {
+          const [e, n] = sceneToMga([x, 0, z], localOrigin);
+          return mga50ToWgs84([e, n]);
+        });
+        ring.push(ring[0]); // close the polygon ring
+
+        const footprintFeature = {
+          type: "Feature",
+          geometry: { type: "Polygon", coordinates: [ring] },
+          properties: { name: file.name },
+        };
+        state.ifcFootprintFeature = footprintFeature;
+        addOrUpdateIfcLayer(feature, footprintFeature);
+
+        setStatus(
+          `Placed ${file.name} at MGA50 E${georef.eastingOffset} N${georef.northingOffset} ` +
+            `(${georef.crsName ?? "CRS name not found"}). Footprint shown is an axis-aligned ` +
+            "bounding-box outline, not the true design shape (see ifc.js) — good enough for a " +
+            "rectangular, unrotated design like GT11, looser for anything rotated or non-rectangular."
+        );
+      } catch (err) {
+        console.error("[K2-2D] Footprint geometry load failed, keeping point marker only:", err);
+        setStatus(
+          `Placed ${file.name}'s base point, but couldn't load its geometry for a footprint: ` +
+            `${err.message} (see console).`
+        );
+      }
     } catch (err) {
       console.error(err);
       setStatus(`Failed to read ${file.name}: ${err.message}`);
