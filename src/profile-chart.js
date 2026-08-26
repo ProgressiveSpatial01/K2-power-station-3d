@@ -51,12 +51,26 @@ export function renderProfileChart(container, { totalDistanceM }, overlays = {})
     return;
   }
 
-  const allElevations = [
-    ...lineCrossings.map((c) => c.elevationAhd),
-    ...surfaceChords.flatMap((chord) => chord.points.map((p) => p.elevationAhd)),
-  ];
-  const minEl = Math.min(...allElevations);
-  const maxEl = Math.max(...allElevations);
+  // Built with a manual reduce, NOT Math.min(...arr)/Math.max(...arr) —
+  // spreading into a function call has an engine-specific argument-count
+  // ceiling (V8: tens of thousands), and a real drone-flight-density
+  // surface (thousands of triangles, unlike the tiny 2-triangle test
+  // sample this was first verified against) can cross the cut line often
+  // enough to blow past it, throwing "Maximum call stack size exceeded"
+  // instead of building the chart — hit for real by Cameron 2026-08-26
+  // once he loaded an actual dense surface.
+  let minEl = Infinity;
+  let maxEl = -Infinity;
+  for (const c of lineCrossings) {
+    if (c.elevationAhd < minEl) minEl = c.elevationAhd;
+    if (c.elevationAhd > maxEl) maxEl = c.elevationAhd;
+  }
+  for (const chord of surfaceChords) {
+    for (const p of chord.points) {
+      if (p.elevationAhd < minEl) minEl = p.elevationAhd;
+      if (p.elevationAhd > maxEl) maxEl = p.elevationAhd;
+    }
+  }
   // Pad the elevation range a little so nothing touches the edges.
   const pad = Math.max(0.5, (maxEl - minEl) * 0.1);
   const yMin = minEl - pad;

@@ -783,6 +783,26 @@ correctly showed **Δ 3.500 m** — matching the expected numbers exactly,
 not just "something rendered." Also confirmed `mouseleave` correctly
 hides the live overlay and clears the readout.
 
+**Bug, found by Cameron in real use, fixed same day: "Failed to build
+profile: Maximum call stack size exceeded."** The chart's Y-axis range
+was built with `Math.min(...allElevations)` / `Math.max(...allElevations)`
+— spreading an array into a function call, which has an engine-specific
+argument-count ceiling (confirmed in this exact environment: `Math.min()`
+on a 200,000-element spread throws this exact `RangeError`, the same
+class and message Cameron saw). This was invisible against the tiny
+2-triangle "Quick Tin" test sample every prior surface verification used
+— it only shows up once a real, much denser surface (a genuine drone-
+flight TIN can have thousands of triangles) gets cut, and enough of them
+cross the section line to build a large enough `allElevations` array.
+Fixed by building the min/max with a plain manual loop instead (`for...
+if` — no spread, no argument-count limit, correct regardless of size).
+**Verified the fix directly against the actual failure mode**: confirmed
+`Math.min(...)` really does throw `RangeError: Maximum call stack size
+exceeded` at 200,000 elements in this environment (root cause proven, not
+assumed), then re-ran `renderProfileChart()` with a synthetic 100,000-
+point surface chord and 50,000 line crossings — built the chart
+correctly with no error.
+
 ### Terrain (`src/terrain.js`) — Mapbox Terrain-RGB REMOVED 2026-08-26, imagery kept
 
 **Cameron: "the mapbox terrain should be removed, it doesn't really do
