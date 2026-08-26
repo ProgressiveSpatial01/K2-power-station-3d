@@ -341,3 +341,50 @@ async function extractFirstZipEntry(buf) {
     `Unsupported ZIP compression method ${method} — only stored(0)/deflate(8) handled.`
   );
 }
+
+// --- Gap splitting (2026-08-26) --------------------------------------
+
+/**
+ * Split a polyline's points into multiple sub-polylines wherever
+ * consecutive points are further apart than `thresholdM`.
+ *
+ * Needed because a real 800-record weekly export bundles multiple
+ * physically separate features into ONE `string` record's `data_3d`,
+ * with no marker of where one ends and the next begins — found by
+ * inspecting a "power mh" record with 205 points: it decomposed into
+ * ~30 clusters of ~8 points each (each cluster a small manhole rim
+ * outline, <1m across), linked by large jumps (17-133m) to the next
+ * manhole's cluster. Rendered as one continuous line, this draws long
+ * spurious lines connecting unrelated manholes — reported by Cameron as
+ * "pits seem to be joining up."
+ *
+ * The threshold isn't a fragile guess at an arbitrary cutoff: measured
+ * against the real file, every observed within-cluster gap was <1m and
+ * every between-cluster gap was >17m, with nothing in between — so 3m
+ * sits safely in a wide empirically-observed gap, for this file at
+ * least. Records that are genuinely one continuous alignment (also seen
+ * in the same file: several 135-137 point records) have zero gaps over
+ * 3m and correctly come back as a single segment, unsplit.
+ *
+ * @param {Array<[number, number, number]>} points
+ * @param {number} thresholdM
+ * @returns {Array<Array<[number, number, number]>>} one or more segments
+ */
+export function splitOnGaps(points, thresholdM = 3) {
+  if (points.length === 0) return [];
+  const segments = [];
+  let current = [points[0]];
+  for (let i = 1; i < points.length; i++) {
+    const [x1, y1] = points[i - 1];
+    const [x2, y2] = points[i];
+    const dist = Math.hypot(x2 - x1, y2 - y1);
+    if (dist > thresholdM) {
+      segments.push(current);
+      current = [points[i]];
+    } else {
+      current.push(points[i]);
+    }
+  }
+  segments.push(current);
+  return segments;
+}

@@ -30,7 +30,8 @@ import {
   computeFootprintCornersScene,
   resolveCoordinationOffset,
 } from "./ifc.js";
-import { loadTwelveDaFile } from "./twelve-d.js";
+import { loadTwelveDaFile, splitOnGaps } from "./twelve-d.js";
+import { normalizeColour } from "./service-colour.js";
 import { createLayerGroup } from "./layer-tree.js";
 import { buildModelTree } from "./model-tree.js";
 import { createDrawTools } from "./draw-tools.js";
@@ -285,7 +286,13 @@ function addOrUpdateServicesLayer(features) {
       type: "line",
       source: sourceId,
       layout: { "line-join": "round", "line-cap": "round" },
-      paint: { "line-color": "#2fa3ff", "line-width": 3 },
+      // Data-driven from each feature's own (normalised) 12d colour —
+      // was hardcoded to one flat blue for every service regardless of
+      // its real colour, reported by Cameron as "colours aren't coming
+      // through." See service-colour.js for why the raw 12d value can't
+      // just be used directly (AutoCAD Color Index codes etc. aren't
+      // valid CSS on their own).
+      paint: { "line-color": ["get", "colour"], "line-width": 3 },
     });
     map.on("click", layerId, (e) => {
       const p = e.features[0].properties;
@@ -294,6 +301,7 @@ function addOrUpdateServicesLayer(features) {
         .setHTML(
           `<b>${p.name ?? "Service"}</b><br>${p.model ?? ""} (style ${p.style ?? "?"})<br>` +
             `Diameter: ${p.diameter ?? "?"} m, justify: ${p.justify ?? "?"}<br>` +
+            `Colour: ${p.rawColour ?? "?"}<br>` +
             `Depth: surveyed (12d) — see 3D view for actual elevation.`
         )
         .addTo(map);
@@ -544,28 +552,48 @@ function wireServicesInput() {
       // included some of these. Skip them for the line layer rather than
       // feeding Mapbox invalid geometry — they're not services with a
       // depth/diameter to extrude/plot as a line anyway.
-      const skipped = records.filter((r) => r.centrelinePoints.length < 2).length;
-      if (skipped > 0) {
-        console.warn(`[K2-2D] Skipped ${skipped}/${records.length} record(s) with <2 points (point/symbol data, not a line).`);
+      //
+      // Also split each record on large coordinate gaps (splitOnGaps,
+      // twelve-d.js) before building features: some real records bundle
+      // several physically separate features (e.g. multiple distinct
+      // manhole rim outlines) into one `data_3d` array with no marker
+      // between them — reported by Cameron as "pits seem to be joining
+      // up." Un-split, that draws long spurious lines connecting
+      // unrelated pits. One 12d record can therefore become several
+      // map features.
+      let skippedShort = 0;
+      const features = records.flatMap((r) => {
+        const segments = splitOnGaps(r.centrelinePoints);
+        return segments
+          .filter((seg) => {
+            const ok = seg.length >= 2;
+            if (!ok) skippedShort++;
+            return ok;
+          })
+          .map((seg) => ({
+            type: "Feature",
+            geometry: {
+              type: "LineString",
+              coordinates: seg.map(([e, n]) => mga50ToWgs84([e, n])),
+            },
+            properties: {
+              name: r.name,
+              model: r.model ?? "(unlabelled)",
+              style: r.style ?? "(no style)",
+              diameter: r.diameter,
+              justify: r.justify,
+              depthAccuracy: "surveyed",
+              rawColour: r.colour,
+              colour: normalizeColour(r.colour),
+            },
+          }));
+      });
+      if (skippedShort > 0) {
+        console.warn(
+          `[K2-2D] Skipped ${skippedShort} segment(s) with <2 points (point/symbol data, or an ` +
+            "isolated single point left over after gap-splitting)."
+        );
       }
-
-      const features = records
-        .filter((r) => r.centrelinePoints.length >= 2)
-        .map((r) => ({
-          type: "Feature",
-          geometry: {
-            type: "LineString",
-            coordinates: r.centrelinePoints.map(([e, n]) => mga50ToWgs84([e, n])),
-          },
-          properties: {
-            name: r.name,
-            model: r.model ?? "(unlabelled)",
-            style: r.style ?? "(no style)",
-            diameter: r.diameter,
-            justify: r.justify,
-            depthAccuracy: "surveyed",
-          },
-        }));
 
       state.serviceFeatures = state.serviceFeatures.concat(features);
       addOrUpdateServicesLayer(state.serviceFeatures);
