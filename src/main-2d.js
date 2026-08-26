@@ -32,6 +32,7 @@ import {
 } from "./ifc.js";
 import { loadTwelveDaFile } from "./twelve-d.js";
 import { createLayerGroup } from "./layer-tree.js";
+import { buildModelTree } from "./model-tree.js";
 import { createDrawTools } from "./draw-tools.js";
 import { fetchElevationProfile } from "./elevation-profile.js";
 import { renderProfileChart } from "./profile-chart.js";
@@ -78,7 +79,8 @@ const state = {
   ifcFootprintFeature: null,
   ifcRowAdded: false,
   serviceFeatures: [],
-  checkedServiceGroups: new Set(),
+  knownModelPaths: new Set(), // every distinct `model` path seen so far, across all loads
+  checkedServiceGroups: new Set(), // which of those are currently checked/visible
 };
 
 // Headless @thatopen/components engine, lazily set up on first IFC load
@@ -299,41 +301,62 @@ function addOrUpdateServicesLayer(features) {
   }
 
   applyServicesFilter(layerId);
-
-  // Add a sub-toggle for every 12d `model` not already represented — mirrors
-  // CSBP's sub-grouping, driven by a Mapbox `filter` on one shared layer
-  // rather than one Mapbox layer per group (cheaper, and scales to however
-  // many groups a real export has).
-  //
-  // Grouping by `model`, not `style`: found 2026-08-26 against a real
-  // 800-record weekly export that `style` is nearly useless for grouping
-  // there (734/800 records just have style "1"), while `model` gives real
-  // discipline categories (Sewer, Water, Power/High Voltage, Power/Low
-  // Voltage, Drainage, ...) — see twelve-d.js parse12da() for how model
-  // tracking works. Falls back to `style` only for exports (like the
-  // original small sample) that don't have meaningful model paths.
-  const groupsSeen = new Set(features.map((f) => f.properties.model));
-  for (const group of groupsSeen) {
-    if (state.checkedServiceGroups.has(group)) continue; // already has a row
-    state.checkedServiceGroups.add(group);
-    servicesGroup.addRow({
-      label: shortenModelLabel(group),
-      color: "#2fa3ff",
-      checked: true,
-      onChange: (checked) => {
-        if (checked) state.checkedServiceGroups.add(group);
-        else state.checkedServiceGroups.delete(group);
-        applyServicesFilter(layerId);
-      },
-    });
-  }
+  rebuildServicesTreeIfNeeded(features, layerId);
 }
 
-/** "04 K2 Power Station/Services/Loc/Power/Low Voltage" -> "Power/Low Voltage" — the sidebar column is narrow, and every group in one export tends to share a long common prefix. Purely cosmetic; the full path stays in `properties.model` for popups/filtering. */
-function shortenModelLabel(model) {
-  if (!model) return "(unlabelled)";
-  const parts = model.split("/");
-  return parts.length > 2 ? parts.slice(-2).join("/") : model;
+/**
+ * Rebuild the "Underground Services" nested tree (see model-tree.js —
+ * real 12d `model` paths like "04 K2 Power Station/Services/Loc/Power/
+ * High Voltage" compact into an actual sub-grouped tree, not a flat
+ * list) whenever a genuinely new model path shows up that isn't already
+ * represented. Rebuilds from scratch rather than patching an existing
+ * tree in place — inserting into an already-rendered compacted tree
+ * while keeping its structure correct is real work; a full rebuild from
+ * the accumulated model set is simple and correct instead. Trade-off:
+ * any checkboxes the user had unticked get reset to "all checked" on a
+ * rebuild. Acceptable for now — in practice this fires once or twice a
+ * session (one services file load, maybe a second with new models),
+ * not continuously.
+ *
+ * Grouping by `model`, not `style`: found 2026-08-26 against a real
+ * 800-record weekly export that `style` is nearly useless for grouping
+ * there (734/800 records just have style "1"), while `model` gives real
+ * discipline categories (Sewer, Water, Power/High Voltage, Power/Low
+ * Voltage, Drainage, ...) — see twelve-d.js parse12da() for how model
+ * tracking works.
+ */
+function rebuildServicesTreeIfNeeded(features, layerId) {
+  const modelsInThisLoad = new Set(features.map((f) => f.properties.model));
+  const hasNewModel = [...modelsInThisLoad].some((m) => !state.knownModelPaths.has(m));
+  if (!hasNewModel) return;
+
+  for (const m of modelsInThisLoad) state.knownModelPaths.add(m);
+  state.checkedServiceGroups = new Set(state.knownModelPaths); // default: everything checked
+
+  servicesGroup.clear();
+  const tree = buildModelTree([...state.knownModelPaths]);
+  renderModelTree(servicesGroup, tree, layerId);
+}
+
+/** Recursively render a model-tree.js tree into a layer-tree.js group. */
+function renderModelTree(group, nodes, layerId) {
+  for (const node of nodes) {
+    if (node.type === "leaf") {
+      group.addRow({
+        label: node.label,
+        color: "#2fa3ff",
+        checked: state.checkedServiceGroups.has(node.fullPath),
+        onChange: (checked) => {
+          if (checked) state.checkedServiceGroups.add(node.fullPath);
+          else state.checkedServiceGroups.delete(node.fullPath);
+          applyServicesFilter(layerId);
+        },
+      });
+    } else {
+      const sub = group.addSubgroup({ label: node.label });
+      renderModelTree(sub, node.children, layerId);
+    }
+  }
 }
 
 function applyServicesFilter(layerId) {
