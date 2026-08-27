@@ -103,15 +103,19 @@ export function createSurfaceCompareControl(container, { setSurfaceVisible }) {
 
       const prevA = selectA.value;
       const prevB = selectB.value;
+      // NOT select.replaceChildren(...ids.map(...)) — same argument-count-
+      // ceiling issue as the Math.min(...)/allFeatures.push(...) bugs
+      // fixed elsewhere (main-2d.js, profile-chart.js). Currently safe in
+      // practice (the number of loaded surfaces stays small), but fixed
+      // defensively for consistency now that this pattern has bitten twice.
       for (const select of [selectA, selectB]) {
-        select.replaceChildren(
-          ...ids.map((id) => {
-            const opt = document.createElement("option");
-            opt.value = id;
-            opt.textContent = id;
-            return opt;
-          })
-        );
+        select.replaceChildren();
+        for (const id of ids) {
+          const opt = document.createElement("option");
+          opt.value = id;
+          opt.textContent = id;
+          select.appendChild(opt);
+        }
       }
       // Keep the existing pick if it's still valid (a new 3rd+ surface
       // arriving shouldn't reset an in-progress comparison); default to
