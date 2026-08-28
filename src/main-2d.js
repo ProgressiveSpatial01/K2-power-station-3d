@@ -84,6 +84,26 @@ const state = {
   ifcRowAdded: false,
 };
 
+// Whether a measure/section draw tool is currently active — checked by
+// every clickable layer's popup handler below (IFC point/footprint,
+// services/design-linework, design surfaces) so they can get out of the
+// way while drawing. Added 2026-08-27, per Cameron: "if i have the tin
+// surface on, clicking on it doesn't register as a cut point when trying
+// to cut a section, it just gives me the tin details, i have to click
+// off the tin to make it load." A feature's own `map.on("click",
+// layerId, ...)` popup handler doesn't call stopPropagation and
+// shouldn't, by Mapbox's documented event model, block mapbox-gl-draw's
+// own click handling for the SAME click — but empirically, clicking a
+// rendered feature while a draw mode is active was eating the click
+// instead of adding a vertex. Rather than chase mapbox-gl-draw's exact
+// internal interaction with feature-click queries (not independently
+// confirmable without live mouse interaction against a real render — see
+// README's render-loop-suspension note), the safe, standard fix real
+// Mapbox apps use is to just suppress custom feature popups while a draw
+// tool is active — you don't want one interrupting a measurement anyway.
+// See wireMapToolbar()'s setActiveTool().
+const drawToolState = { active: false };
+
 // Headless @thatopen/components engine, lazily set up on first IFC load
 // (so picking a 12d file or just browsing the map doesn't pay for
 // spinning up the IFC/WASM pipeline). Renders into a 1x1 offscreen div
@@ -209,6 +229,7 @@ function addOrUpdateIfcLayer(pointFeature, footprintFeature) {
       },
     });
     map.on("click", POINT_LAYER_ID, (e) => {
+      if (drawToolState.active) return; // let the click through to the active draw tool instead
       const p = e.features[0].properties;
       new mapboxgl.Popup()
         .setLngLat(e.lngLat)
@@ -246,6 +267,7 @@ function addOrUpdateIfcLayer(pointFeature, footprintFeature) {
         POINT_LAYER_ID
       );
       map.on("click", FOOTPRINT_FILL_LAYER_ID, (e) => {
+        if (drawToolState.active) return; // let the click through to the active draw tool instead
         const p = e.features[0].properties;
         new mapboxgl.Popup()
           .setLngLat(e.lngLat)
@@ -369,6 +391,7 @@ function createLineFeatureController({ sourceId, layerId, group, popupHtml }) {
       paint: { "line-color": ["get", "colour"], "line-width": 3 },
     });
     map.on("click", layerId, (e) => {
+      if (drawToolState.active) return; // let the click through to the active draw tool instead
       new mapboxgl.Popup().setLngLat(e.lngLat).setHTML(popupHtml(e.features[0].properties)).addTo(map);
     });
   }
@@ -579,6 +602,7 @@ function createSurfaceFeatureController({ sourceId, fillLayerId, lineLayerId, gr
       paint: { "line-color": ["get", "colour"], "line-width": 0.5, "line-opacity": 0.6 },
     });
     map.on("click", fillLayerId, (e) => {
+      if (drawToolState.active) return; // let the click through to the active draw tool instead — the actual bug report
       new mapboxgl.Popup().setLngLat(e.lngLat).setHTML(popupHtml(e.features[0].properties)).addTo(map);
     });
   }
@@ -1045,6 +1069,9 @@ function wireMapToolbar() {
   const toolButtons = [btnDistance, btnArea, btnSection];
   function setActiveTool(activeBtn) {
     for (const b of toolButtons) b.classList.toggle("active", b === activeBtn);
+    // See drawToolState's declaration (top of file) for why every
+    // clickable layer's popup handler needs to know this.
+    drawToolState.active = activeBtn !== null;
   }
 
   function showMeasureResult(text) {

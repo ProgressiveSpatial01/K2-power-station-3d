@@ -849,6 +849,45 @@ spot-checked the output is byte-identical to before (same properties,
 same projected ring coordinates) — this is a pure speed fix, not a
 behaviour change.
 
+### Clicking a loaded surface while drawing a section didn't register a cut point (2026-08-27)
+
+Cameron: *"if i have the tin surface on, clicking on it doesn't register
+as a cut point when trying to cut a section, it just give me the tin
+details, i have to click off the tin to make it load."* A real
+interaction conflict: every clickable layer (IFC point/footprint,
+services, design linework, design surfaces) has its own `map.on("click",
+layerId, ...)` popup handler, and a click landing on one of those
+features while a draw tool (distance/area/section) is active was being
+consumed by that popup instead of reaching `mapbox-gl-draw`'s own
+vertex-placement handling.
+
+**Fix, not a fully root-caused diagnosis**: rather than chase
+`mapbox-gl-draw`'s exact internal interaction with feature-click queries
+— Mapbox's own docs don't describe layer-specific click listeners as
+blocking other click handlers, so the precise mechanism isn't something
+I could pin down with confidence, and confirming it properly needs real
+mouse-driven interaction against an actually-rendered map, which this
+session's sandboxed browser can't do (render loop suspended while not
+displayed — see "Known issues") — this applies the standard, safe fix
+real Mapbox apps use for this exact class of conflict: suppress custom
+feature popups while a draw tool is active. A new shared `drawToolState.active`
+flag (set by `wireMapToolbar()`'s `setActiveTool()`, which already fires
+at exactly the right moments — tool start, section finish, Clear,
+profile-pane close) is checked at the top of all four popup handlers;
+each just returns early instead of opening a popup, letting the click
+through to whatever `mapbox-gl-draw` does with it.
+
+**Not independently verified against real click interaction** — traced
+the logic by hand (confirmed `drawToolState.active` is true for the
+entire window from starting a tool through to the line/polygon actually
+finishing, covering every click in between, and false again immediately
+after) and confirmed the app still imports/runs with no errors, but
+couldn't test the actual "does clicking the TIN now place a vertex"
+behaviour live in this environment. Please confirm this fixes it — if
+not, the more likely next step is adding `e.originalEvent.stopPropagation()`
+awareness or investigating whichever layer/control is really consuming
+the event, with a devtools session actually reproducing the click.
+
 ### Terrain (`src/terrain.js`) — Mapbox Terrain-RGB REMOVED 2026-08-26, imagery kept
 
 **Cameron: "the mapbox terrain should be removed, it doesn't really do
