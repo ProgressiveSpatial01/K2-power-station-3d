@@ -139,13 +139,14 @@ pixel clone of their branding/icon set.
   this is ground/great-circle distance, not MGA50 grid distance. Flag if
   Cameron needs grid-exact numbers later.
 - **Section**: draw a line, and the view splits — a profile pane opens
-  **side-by-side** with the map (not stacked top/bottom) showing an
-  elevation-vs-distance chart along that line. **Guessed at the split
-  orientation** since "tiles the screen vertically" is genuinely
-  ambiguous in English (side-by-side columns vs. stacked rows both fit
-  that phrase) — picked side-by-side to match how Civil3D pairs a plan
-  view with a profile view, but this is a one-line CSS/layout change to
-  flip if Cameron meant the other one.
+  **tiled across the bottom** of the map, full width, defaulting to half
+  the page height, with an "Expand" toggle to grow it to most of the
+  screen for a closer look (2026-08-27, per Cameron). **Originally
+  guessed as a side-by-side split** (map | profile, like Civil3D) since
+  "tiles the screen vertically" was genuinely ambiguous in English —
+  Cameron confirmed he meant the horizontal/bottom-docked layout, so this
+  flipped `#map-area` from a row to a column (`index.html`) and added the
+  expand toggle (`#profile-expand`, `main-2d.js`).
 - **No terrain elevation any more** (removed 2026-08-26, per Cameron:
   "the mapbox terrain should be removed, it doesn't really do anything
   relevant" — see "Terrain" below). Originally sampled Mapbox
@@ -908,6 +909,25 @@ behaviour live in this environment. Please confirm this fixes it — if
 not, the more likely next step is adding `e.originalEvent.stopPropagation()`
 awareness or investigating whichever layer/control is really consuming
 the event, with a devtools session actually reproducing the click.
+
+**Confirmed fixed** — Cameron: "the click worked and generated a section." No further action needed here.
+
+### Section pane layout: bottom-docked, half-page default, expandable (2026-08-27)
+
+Cameron, after the recursion fix landed: *"just need to be able to expand it or have it default to half the page, probably across the bottom actually (tiled horizontally)."* Two changes to `index.html`/`main-2d.js`:
+
+- `#map-area` flipped from `flex-direction: row` to `column` — the map and the section-profile pane now stack vertically (map on top, profile pane along the bottom, full width) instead of sitting side-by-side. This also resolves the "Guessed at the split orientation" caveat noted in "Measurement & section tools" above — Cameron confirmed the horizontal/bottom-docked reading was the one he meant.
+- `#profile-pane` defaults to `flex-basis: 50%` (half the page) instead of a fixed 420px sidebar-like width, plus a new **Expand** button (`#profile-expand`) in the pane's header that toggles a `.expanded` class (`flex-basis: 85%`) for a closer look at the chart, and collapses back to 50% automatically the next time the pane is opened fresh (`resetProfileExpansion()`).
+
+A full-width bottom pane also means the chart itself renders noticeably wider than before (previously constrained to a ~420px-wide sidebar) — no code change needed there since `profile-chart.js`'s SVG already scales to `width:100%` of its container.
+
+**Not independently verified live** — the click handlers this depends on (`#profile-expand`'s listener) only get wired up after Mapbox's real `map.on("load", ...)` fires, which doesn't happen in this session's sandboxed browser (suspended render loop, see "Known issues") — confirmed via DOM inspection that `#map-area`'s computed `flex-direction` is now `column` and that all the new elements exist with the right ids, but couldn't click-test the Expand toggle itself. Simple enough (`classList.toggle("expanded")`) that it should just work, but flag if it doesn't.
+
+### Surface not appearing in the section view — investigated, code confirmed correct (2026-08-27)
+
+Cameron: *"still not showing the surface"* (in the section/profile chart). Tested the actual crossing logic against the real `full_tin` sample, this time deliberately drawing a synthetic section line straight through the surface's own real, small extent (E384882–384965, N6433964–6434113 in MGA50 — roughly an 85m × 150m patch) rather than an arbitrary line elsewhere on the site: **it correctly found 2 real chords**, with sensible interpolated elevations (6.69m → 6.90m → 7.15m AHD, matching the surface's known 6.33–7.53m range).
+
+**Conclusion: the crossing code is correct.** The much more likely explanation is that the section lines being drawn simply aren't passing through that specific small patch — "FL Surface.12daz" is a tiny "Quick Tin" test file covering a small corner of the site (see "Design surfaces (`full_tin`) implemented"), not a full-site surface. A section line anywhere else on the K2 site would correctly show 0 surface chords, same as several of Cameron's own reported attempts already did (6-7 line crossings, 0 surface chords). **Worth trying a section line drawn specifically through that small area to confirm** — if it still doesn't show a surface line even there, that would point to something else (e.g. the surface's own sidebar checkbox being off); if it does show up there but nowhere else, that confirms this is just the test file's limited real coverage, not a bug, and resolves itself once a full-site (or at least larger) surface export is available.
 
 ### Terrain (`src/terrain.js`) — Mapbox Terrain-RGB REMOVED 2026-08-26, imagery kept
 

@@ -78,34 +78,45 @@
       }
       .layer-group-header, .layer-row { min-width: 0; }
 
-      /* Map area: map + (optional) section-profile pane side by side */
-      #map-area { flex: 1; display: flex; min-width: 0; }
+      /* Map area: map on top, (optional) section-profile pane tiled
+         across the bottom, full width. Was side-by-side (map | profile)
+         originally — flipped 2026-08-27 per Cameron, who confirmed he
+         actually meant "tiles the screen" as a horizontal split (map on
+         top, profile pane along the bottom), not the side-by-side guess
+         this started with — see the README correction. */
+      #map-area { flex: 1; display: flex; flex-direction: column; min-height: 0; }
       /* Mapbox owns #map's DOM internally (it warns if given non-empty
          children) — the toolbar/measure-result overlays live in this
          wrapper instead, positioned absolutely over the map canvas. */
-      #map-wrapper { flex: 1; position: relative; min-width: 0; }
+      #map-wrapper { flex: 1; position: relative; min-height: 0; }
       #map { position: absolute; inset: 0; }
 
       #profile-pane {
-        flex: 0 0 420px;
+        flex: 0 0 50%; /* half the page by default, per Cameron */
         display: none;
         flex-direction: column;
         background: #17181a;
         color: #e6e6e6;
-        border-left: 1px solid #333;
+        border-top: 1px solid #333;
+        min-height: 0;
       }
       #profile-pane.active { display: flex; }
+      /* "Expand" (per Cameron: "just need to be able to expand it") grows
+         the pane to most of the screen, for a closer look at the chart —
+         toggled by #profile-expand, see wireMapToolbar(). */
+      #profile-pane.expanded { flex-basis: 85%; }
       #profile-header {
         display: flex; align-items: center; justify-content: space-between;
-        padding: 10px 14px; border-bottom: 1px solid #2c2e31; flex-shrink: 0;
+        gap: 8px; padding: 10px 14px; border-bottom: 1px solid #2c2e31; flex-shrink: 0;
       }
       #profile-header h2 { font-size: 12px; margin: 0; color: #ddd; text-transform: uppercase; letter-spacing: 0.06em; }
-      #profile-close {
+      #profile-header-buttons { display: flex; gap: 6px; margin-left: auto; }
+      #profile-expand, #profile-close {
         background: none; border: 1px solid #444; color: #aaa; border-radius: 4px;
         padding: 3px 8px; cursor: pointer; font-size: 12px;
       }
-      #profile-close:hover { color: #fff; border-color: #666; }
-      #profile-body { flex: 1; padding: 14px; overflow-y: auto; }
+      #profile-expand:hover, #profile-close:hover { color: #fff; border-color: #666; }
+      #profile-body { flex: 1; padding: 14px; overflow-y: auto; min-height: 0; }
       #profile-summary { font-size: 11px; color: #8a8f98; margin-bottom: 10px; }
       .profile-empty { color: #888; font-size: 12px; }
 
@@ -171,7 +182,10 @@
         <div id="profile-pane">
           <div id="profile-header">
             <h2>Section Profile</h2>
-            <button id="profile-close">✕ Close</button>
+            <div id="profile-header-buttons">
+              <button id="profile-expand" title="Expand to most of the screen">⤢ Expand</button>
+              <button id="profile-close">✕ Close</button>
+            </div>
           </div>
           <div id="profile-body">
             <div id="profile-summary"></div>

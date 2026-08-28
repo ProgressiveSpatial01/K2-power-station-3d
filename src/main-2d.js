@@ -1065,6 +1065,7 @@ function wireMapToolbar() {
   const profileSummaryEl = document.getElementById("profile-summary");
   const profileChartEl = document.getElementById("profile-chart");
   const profileCloseBtn = document.getElementById("profile-close");
+  const profileExpandBtn = document.getElementById("profile-expand");
 
   const toolButtons = [btnDistance, btnArea, btnSection];
   function setActiveTool(activeBtn) {
@@ -1088,8 +1089,17 @@ function wireMapToolbar() {
     requestAnimationFrame(() => map.resize());
   }
 
+  // Collapses back to the default half-page height on close — reopening
+  // for a new section always starts fresh rather than staying expanded
+  // from a previous look.
+  function resetProfileExpansion() {
+    profilePane.classList.remove("expanded");
+    profileExpandBtn.textContent = "⤢ Expand";
+  }
+
   function closeProfilePane() {
     profilePane.classList.remove("active");
+    resetProfileExpansion();
     setActiveTool(null);
     afterPaneToggle();
   }
@@ -1181,6 +1191,11 @@ function wireMapToolbar() {
   profileCloseBtn.addEventListener("click", () => {
     tools.stop();
     closeProfilePane();
+  });
+  profileExpandBtn.addEventListener("click", () => {
+    const expanded = profilePane.classList.toggle("expanded");
+    profileExpandBtn.textContent = expanded ? "⤡ Collapse" : "⤢ Expand";
+    afterPaneToggle(); // map's visible height changed too — resize it
   });
 
   // Starting a measurement while the profile pane is open should close
