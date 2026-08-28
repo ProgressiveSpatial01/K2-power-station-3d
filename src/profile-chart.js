@@ -176,6 +176,10 @@ function renderProfileChartInner(container, { totalDistanceM }, overlays, setSte
       </g>
       <rect class="snap-capture" x="${margin.left}" y="${margin.top}" width="${plotW}" height="${plotH}" fill="transparent" />
     </svg>
+    <div class="snap-mode-toggle" style="display:flex; gap:6px; margin:6px 2px 0;">
+      <button type="button" data-mode="surface-service" style="flex:1; font-size:11px; padding:4px 0; border-radius:4px; border:1px solid #2fa3ff; background:#2fa3ff; color:#fff; cursor:pointer;">Surface ↔ Pipe</button>
+      <button type="button" data-mode="service-service" style="flex:1; font-size:11px; padding:4px 0; border-radius:4px; border:1px solid #444; background:#111; color:#ccc; cursor:pointer;">Pipe ↔ Pipe</button>
+    </div>
     <div class="snap-readout" style="min-height:16px; margin:4px 2px 0; font-size:12px; color:#ffb454;"></div>
     ${legend}
   `;
@@ -185,10 +189,28 @@ function renderProfileChartInner(container, { totalDistanceM }, overlays, setSte
 }
 
 /**
- * The live surface/service delta-height snap (see file header). Reads
- * back the just-rendered SVG's own elements rather than keeping parallel
- * state — this is the whole reason margin/plotH/x/y/distanceAtX get
- * passed in, so the maths here matches what was actually drawn exactly.
+ * The live snap-to-compare tool (see file header). Reads back the just-
+ * rendered SVG's own elements rather than keeping parallel state — this
+ * is the whole reason margin/plotH/x/y/distanceAtX get passed in, so the
+ * maths here matches what was actually drawn exactly.
+ *
+ * Two modes (added 2026-08-28, per Cameron: "enable the option to switch
+ * between snapping depths to a surface or a point to point, eg if we
+ * want to know the depth between 2 pipes"):
+ *  - "surface-service" (default): point A follows the design surface's
+ *    own elevation directly under the cursor; point B snaps to the
+ *    nearest service/linework crossing to the cursor. Same as before.
+ *  - "service-service": point A and B both snap to services — the two
+ *    NEAREST crossings to the cursor position, so hovering near two
+ *    close-together pipes compares those two directly (e.g. clearance
+ *    between two crossing services), rather than either against the
+ *    surface.
+ * Both modes report the same three numbers (per Cameron: "as well as
+ * depths give 2d and 3d distance between pipes") — vertical delta
+ * (height/depth), 2D distance (horizontal separation along the cut
+ * line — both snapped points lie ON that line by construction, so this
+ * is exact, not an approximation), and 3D distance (straight-line
+ * distance accounting for both).
  */
 function wireLiveSnap(container, { x, y, distanceAtX, margin, plotH, lineCrossings, surfaceChords }) {
   const svg = container.querySelector("svg");
@@ -196,10 +218,28 @@ function wireLiveSnap(container, { x, y, distanceAtX, margin, plotH, lineCrossin
   const liveGroup = container.querySelector(".live-snap");
   const guideLine = container.querySelector(".snap-guide");
   const connector = container.querySelector(".snap-connector");
-  const surfaceDot = container.querySelector(".snap-surface");
-  const serviceDot = container.querySelector(".snap-service");
+  const dotA = container.querySelector(".snap-surface");
+  const dotB = container.querySelector(".snap-service");
   const readout = container.querySelector(".snap-readout");
+  const modeButtons = [...container.querySelectorAll(".snap-mode-toggle button")];
   if (!svg || !captureRect) return;
+
+  let mode = "surface-service";
+
+  function updateModeButtonStyles() {
+    for (const btn of modeButtons) {
+      const active = btn.dataset.mode === mode;
+      btn.style.background = active ? "#2fa3ff" : "#111";
+      btn.style.color = active ? "#fff" : "#ccc";
+      btn.style.borderColor = active ? "#2fa3ff" : "#444";
+    }
+  }
+  for (const btn of modeButtons) {
+    btn.addEventListener("click", () => {
+      mode = btn.dataset.mode;
+      updateModeButtonStyles();
+    });
+  }
 
   function svgPointFromMouse(evt) {
     const pt = svg.createSVGPoint();
@@ -218,18 +258,34 @@ function wireLiveSnap(container, { x, y, distanceAtX, margin, plotH, lineCrossin
         if (distanceM >= a.distanceM && distanceM <= b.distanceM) {
           const span = b.distanceM - a.distanceM;
           const t = span === 0 ? 0 : (distanceM - a.distanceM) / span;
-          return { elevationAhd: a.elevationAhd + t * (b.elevationAhd - a.elevationAhd), surfaceName: chord.surfaceName };
+          return {
+            distanceM,
+            elevationAhd: a.elevationAhd + t * (b.elevationAhd - a.elevationAhd),
+            label: chord.surfaceName,
+          };
         }
       }
     }
     return null; // no loaded surface covers this point along the line
   }
 
-  function nearestServiceCrossing(distanceM) {
-    if (lineCrossings.length === 0) return null;
-    return lineCrossings.reduce((best, c) =>
-      Math.abs(c.distanceM - distanceM) < Math.abs(best.distanceM - distanceM) ? c : best
-    );
+  /** The `n` nearest service/linework crossings to `distanceM`, nearest first. */
+  function nearestServiceCrossings(distanceM, n) {
+    return [...lineCrossings]
+      .sort((a, b) => Math.abs(a.distanceM - distanceM) - Math.abs(b.distanceM - distanceM))
+      .slice(0, n)
+      .map((c) => ({ distanceM: c.distanceM, elevationAhd: c.elevationAhd, label: c.name }));
+  }
+
+  /** @returns {{ a: {distanceM,elevationAhd,label}|null, b: (same)|null }} */
+  function computeSnapPoints(distanceM) {
+    if (mode === "service-service") {
+      const [a = null, b = null] = nearestServiceCrossings(distanceM, 2);
+      return { a, b };
+    }
+    const surfaceHit = elevationOnSurfaceAt(distanceM);
+    const [serviceHit = null] = nearestServiceCrossings(distanceM, 1);
+    return { a: surfaceHit, b: serviceHit };
   }
 
   function onMove(evt) {
@@ -243,43 +299,53 @@ function wireLiveSnap(container, { x, y, distanceAtX, margin, plotH, lineCrossin
     guideLine.setAttribute("y1", margin.top);
     guideLine.setAttribute("y2", margin.top + plotH);
 
-    const surfaceHit = elevationOnSurfaceAt(distanceM);
-    const serviceHit = nearestServiceCrossing(distanceM);
+    const { a: pointA, b: pointB } = computeSnapPoints(distanceM);
 
-    if (surfaceHit) {
-      surfaceDot.style.display = "block";
-      surfaceDot.setAttribute("cx", xx);
-      surfaceDot.setAttribute("cy", y(surfaceHit.elevationAhd));
+    if (pointA) {
+      dotA.style.display = "block";
+      dotA.setAttribute("cx", x(pointA.distanceM));
+      dotA.setAttribute("cy", y(pointA.elevationAhd));
     } else {
-      surfaceDot.style.display = "none";
+      dotA.style.display = "none";
     }
 
-    if (serviceHit) {
-      const serviceX = x(serviceHit.distanceM);
-      serviceDot.style.display = "block";
-      serviceDot.setAttribute("cx", serviceX);
-      serviceDot.setAttribute("cy", y(serviceHit.elevationAhd));
+    if (pointB) {
+      dotB.style.display = "block";
+      dotB.setAttribute("cx", x(pointB.distanceM));
+      dotB.setAttribute("cy", y(pointB.elevationAhd));
     } else {
-      serviceDot.style.display = "none";
+      dotB.style.display = "none";
     }
 
-    if (surfaceHit && serviceHit) {
+    if (pointA && pointB) {
       connector.style.display = "block";
-      connector.setAttribute("x1", xx);
-      connector.setAttribute("y1", y(surfaceHit.elevationAhd));
-      connector.setAttribute("x2", x(serviceHit.distanceM));
-      connector.setAttribute("y2", y(serviceHit.elevationAhd));
-      const delta = Math.abs(surfaceHit.elevationAhd - serviceHit.elevationAhd);
+      connector.setAttribute("x1", x(pointA.distanceM));
+      connector.setAttribute("y1", y(pointA.elevationAhd));
+      connector.setAttribute("x2", x(pointB.distanceM));
+      connector.setAttribute("y2", y(pointB.elevationAhd));
+
+      // Both points lie ON the section line by construction (surface
+      // interpolation happens exactly at the cursor's own position;
+      // service crossings are, by definition, where a service crosses
+      // this line) — so the horizontal separation between their
+      // distanceM values IS the real 2D distance, not an approximation.
+      const verticalM = Math.abs(pointA.elevationAhd - pointB.elevationAhd);
+      const horizontalM = Math.abs(pointA.distanceM - pointB.distanceM);
+      const distance3dM = Math.hypot(horizontalM, verticalM);
+
       readout.textContent =
-        `Δ ${delta.toFixed(3)} m — ${surfaceHit.surfaceName} (RL ${surfaceHit.elevationAhd.toFixed(3)}) ↔ ` +
-        `${serviceHit.name} (RL ${serviceHit.elevationAhd.toFixed(3)}, ${Math.abs(serviceHit.distanceM - distanceM).toFixed(1)}m along line)`;
+        `Δheight ${verticalM.toFixed(3)} m · 2D ${horizontalM.toFixed(3)} m · 3D ${distance3dM.toFixed(3)} m — ` +
+        `${pointA.label} (RL ${pointA.elevationAhd.toFixed(3)}) ↔ ${pointB.label} (RL ${pointB.elevationAhd.toFixed(3)})`;
     } else {
       connector.style.display = "none";
-      readout.textContent = !surfaceHit && !serviceHit
-        ? "No surface or service data under the cursor here."
-        : !surfaceHit
-          ? "No loaded surface covers this point (nearest service shown, no delta to compare against)."
-          : "No service/linework crossing loaded to compare against.";
+      readout.textContent =
+        mode === "service-service"
+          ? "Need at least 2 service/linework crossings near the cursor to compare in this mode."
+          : !pointA && !pointB
+            ? "No surface or service data under the cursor here."
+            : !pointA
+              ? "No loaded surface covers this point (nearest service shown, no delta to compare against)."
+              : "No service/linework crossing loaded to compare against.";
     }
   }
 
@@ -306,7 +372,7 @@ function legendHtml(lineCrossings, surfaceChords) {
   if (surfaceChords.length > 0) {
     parts.push(`<span>▬</span> Design surface (hover for name)`);
   }
-  parts.push(`<span style="color:#ffb454">┊</span> Drag across the chart for a live surface↔service delta height`);
+  parts.push(`<span style="color:#ffb454">┊</span> Drag across the chart for a live delta height + 2D/3D distance (buttons above switch Surface↔Pipe / Pipe↔Pipe)`);
   return `<p style="margin:6px 2px 0; font-size:11px; color:#8a8f98;">${parts.join(" &nbsp;·&nbsp; ")}</p>`;
 }
 
