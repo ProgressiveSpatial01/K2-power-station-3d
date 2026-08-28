@@ -53,13 +53,29 @@ export function createDrawTools(map, { onMeasureResult, onSectionLine }) {
     if (mode === "distance" || mode === "area") {
       onMeasureResult(describeMeasureFeature(last));
     } else if (mode === "section" && last.geometry.type === "LineString") {
-      onSectionLine(last.geometry.coordinates);
-      // Single-shot: go back to plain selection once the line is drawn,
-      // so it doesn't keep accepting more vertices after the user meant
-      // to finish (mapbox-gl-draw's draw_line_string mode otherwise
-      // stays active until double-click/Enter — draw.create already
-      // means a vertex sequence was finalised, so switch away here).
+      const coords = last.geometry.coordinates;
+      // Reset BEFORE calling changeMode() below, not after — found
+      // 2026-08-27 as the real cause of Cameron's "Maximum call stack
+      // size exceeded" (which kept surfacing as a chart-rendering crash,
+      // a total red herring). draw.changeMode() calls the current mode's
+      // onStop(), which mapbox-gl-draw uses to finalise/re-emit the just-
+      // drawn feature — re-firing draw.create/draw.update SYNCHRONOUSLY,
+      // which re-invokes this same handleChange(). With `mode` still
+      // "section" at that point, the re-entrant call used to match this
+      // branch AGAIN, calling onSectionLine() and changeMode() again,
+      // forever — real infinite recursion between this function and
+      // mapbox-gl-draw's own internals, not anything wrong in
+      // onSectionLine itself. This went unnoticed while onSectionLine
+      // was still `async` (awaiting a Mapbox Terrain-RGB fetch deferred
+      // the recursion's actual work past the synchronous changeMode call
+      // via the microtask queue); removing that `await` when Terrain-RGB
+      // was dropped (2026-08-26) made onSectionLine fully synchronous,
+      // nesting its entire body — including chart rendering — directly
+      // inside this same call stack, which is what finally exhausted it.
+      // Resetting `mode` first makes the re-entrant call a no-op instead.
+      mode = null;
       draw.changeMode("simple_select");
+      onSectionLine(coords);
     }
   }
 

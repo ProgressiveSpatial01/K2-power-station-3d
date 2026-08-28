@@ -849,6 +849,27 @@ spot-checked the output is byte-identical to before (same properties,
 same projected ring coordinates) — this is a pure speed fix, not a
 behaviour change.
 
+### CORRECTION: "Failed to build profile: Maximum call stack size exceeded" — actual root cause (2026-08-27)
+
+The two "fixes" above (`Math.min(...)`/`Math.max(...)` spreads, `allFeatures.push(...)` spreads) were REAL bugs, genuinely fixed, and worth keeping — but neither was actually causing Cameron's crash. He kept hitting the identical error after both landed, with trivially small real data (6-7 line crossings, 0 surface chords) that could never approach any argument-count ceiling. Two more rounds of increasingly granular error-reporting (a stage label in `main-2d.js`, then a per-sub-step label inside `renderProfileChart()` itself) narrowed it down to "building line-crossing SVG," which — on inspection — is just `.toFixed()`, template strings, and a simple character-escaping regex. Nothing that should ever recurse.
+
+**Cameron opened real devtools and sent the actual stack trace, which is what actually solved this.** It showed something the status-bar message alone could never reveal: a SECOND, separate uncaught error immediately following the first, with a stack trace repeating the exact same 8-frame cycle hundreds of times:
+
+```
+(anonymous) @ draw-tools.js:62         ← draw.changeMode("simple_select")
+Evented.fire → ... → DrawLineString.onStop → object_to_mode.stop
+→ mode_handler.stop → changeMode → api.changeMode
+→ (anonymous) @ draw-tools.js:62       ← back to the start
+```
+
+**The real bug, in `src/draw-tools.js`'s `handleChange()`**: finishing a section line called `onSectionLine(...)` then `draw.changeMode("simple_select")`, without ever resetting the closure's own `mode` variable back to `null`. `draw.changeMode()` calls the CURRENT mode's `onStop()`, which is how mapbox-gl-draw finalises a just-drawn feature — and finalising it re-fires `draw.create`/`draw.update` **synchronously**. Since `map.on("draw.create", handleChange)` is still registered and `mode` was still `"section"`, that re-fire called `handleChange()` again, which matched the `mode === "section"` branch AGAIN, calling `onSectionLine()` and `draw.changeMode()` AGAIN — real, unbounded mutual recursion between this file and mapbox-gl-draw's own internals, not a bug in the section-building logic at all. Whatever function happened to be executing once the call stack was finally exhausted got blamed — in this case `escapeXml()`'s `String.replace()`, purely by coincidence of how deep each recursive lap went.
+
+**Why this was already-latent but only surfaced now**: this exact `handleChange()` code has been there since the section tool was first built, and `onSectionLine` used to be `async` (it originally `await`ed a Mapbox Terrain-RGB fetch). That `await` deferred the actual profile-building work onto the microtask queue, decoupling it from `draw.changeMode()`'s synchronous call stack — so even though the same re-entrant `handleChange()` call was almost certainly *always* happening, it landed in a fresh, shallow stack each time rather than a nested one, and never grew unbounded. Removing that `await` when Mapbox Terrain-RGB was dropped (2026-08-26, same day, see "Terrain") made `onSectionLine` fully synchronous — nesting its ENTIRE body, including chart rendering, directly inside the same call stack as the recursive `changeMode`/`onStop` cycle, which is what finally exhausted it. **A real regression introduced by an earlier fix in this same session**, not a pre-existing bug newly discovered.
+
+**Fix**: reset `mode = null` in `handleChange()` *before* calling `draw.changeMode("simple_select")`, not after. The re-entrant call (if `draw.changeMode()` does synchronously re-fire, as observed) now sees `mode !== "section"` and does nothing, breaking the cycle at its source regardless of whether `onSectionLine` is sync or async.
+
+**Lesson for next time this class of bug shows up**: three rounds of "fix a real bug, re-verify with bigger synthetic data, still doesn't reproduce" should have been a stronger signal to ask for the actual browser stack trace sooner rather than guessing a third/fourth time — synthetic stress-testing this session's own sandboxed tool calls could reproduce (large arrays) was never going to surface a re-entrancy bug that has nothing to do with data size. The stack trace made this a five-minute fix once available; the two prior "fixes," while independently valid, cost several rounds of back-and-forth chasing the wrong theory first.
+
 ### Clicking a loaded surface while drawing a section didn't register a cut point (2026-08-27)
 
 Cameron: *"if i have the tin surface on, clicking on it doesn't register
