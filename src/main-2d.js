@@ -14,9 +14,9 @@
 // Deliberately reuses the same data/logic modules as the 3D page
 // (crs.js, ifc.js, twelve-d.js) rather than duplicating any CRS or
 // parsing logic — only the rendering shell differs between the two
-// views. No shared *state* between the 2D and 3D pages yet (each has
-// its own file pickers, nothing carries across the navigation) — see
-// README "Open items" for that as a follow-up.
+// views. IFC/services files uploaded here now carry over to the 3D page
+// automatically too (2026-08-28, per Cameron) — see
+// shared-design-store.js and the README's "2D → 3D file carry-over".
 
 import mapboxgl from "mapbox-gl";
 import "mapbox-gl/dist/mapbox-gl.css";
@@ -38,6 +38,7 @@ import { createDrawTools } from "./draw-tools.js";
 import { renderProfileChart } from "./profile-chart.js";
 import { computeSectionCrossings, lineLengthM } from "./section-intersect.js";
 import { createSurfaceCompareControl } from "./surface-compare.js";
+import { stashDesignFile } from "./shared-design-store.js";
 
 const statusEl = document.getElementById("status-bar");
 function setStatus(msg) {
@@ -916,6 +917,7 @@ async function handleIfcDesignFile(file) {
             "design shape (see ifc.js) — good enough for a rectangular, unrotated design, looser " +
             "for anything rotated or non-rectangular."
         );
+        stashDesignFile("design", file); // carries over to the 3D view — see shared-design-store.js
       } catch (err) {
         console.error("[K2-2D] Geometry load failed:", err);
         if (georef) {
@@ -1035,6 +1037,7 @@ function wireServicesInput() {
       servicesController.addFeatures(features);
       fitMapToFeatures(features);
       setStatus(`Loaded ${file.name}: ${records.length} service string(s) on the map.`);
+      stashDesignFile("services", file); // carries over to the 3D view — see shared-design-store.js
     } catch (err) {
       console.error(err);
       setStatus(`Failed to load ${file.name}: ${err.message}`);

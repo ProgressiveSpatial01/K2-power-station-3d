@@ -942,6 +942,18 @@ Cameron, once the layout/surface fixes above landed: *"enable the option to swit
 
 **Verified**: rendered a synthetic chart with 3 service crossings and 1 surface chord, then dispatched real `mousemove` events and hand-checked every number against the input data — default (Surface↔Pipe) mode at one position, Pipe↔Pipe mode at two different positions (confirming it correctly re-picks whichever 2 crossings are nearest as the cursor moves, e.g. correctly switching from "Pipe A ↔ Pipe B" to "Pipe C ↔ Pipe B" when hovering near a third, more distant pipe). Every Δheight/2D/3D figure matched hand-calculated expected values exactly (e.g. `hypot(20, 1.5) = 20.056`). Also confirmed the mode buttons' active/inactive styling updates correctly on click, and that `mouseleave` still resets everything (including back to whichever mode was last selected — deliberately not reset on leave, only on a fresh chart render).
 
+### 2D → 3D file carry-over (`src/shared-design-store.js`) (2026-08-28)
+
+Cameron: *"can we now have the models that are input into the 2d view carry over to the 3d view?"* Previously true — the 2D and 3D pages are two separate full HTML documents (`index.html`/`3d.html`), reached via a normal link navigation, not a single-page app, so there was no live JS state to share and every file had to be uploaded twice.
+
+**New shared module, `shared-design-store.js`**, using **IndexedDB** (not `localStorage` — its ~5-10MB string-only limit is too small for real IFC/12d file blobs; IndexedDB has no such practical limit and is built for exactly this) to stash the raw bytes of every successfully-loaded file, tagged with which upload slot it came from ("design" for IFC, "services" for 12d services). Both pages read from and write to the same store, so this works in **either direction** — whichever page a file gets uploaded in, the other picks it up next time it loads.
+
+- `main-2d.js`: after a successful IFC or services load, calls `stashDesignFile(slot, file)` (fire-and-forget — a storage failure should never break the upload the user's actually watching happen).
+- `main.js`: `wireIfcInput()`/`wireServicesInput()`'s inline logic was unwrapped into standalone `handleIfcFile()`/`handleServicesFile()` functions (same refactor pattern used for `main-2d.js`'s design input earlier this session), so a fresh page load can call `replayStashedFiles()` — which fetches everything stashed (oldest first) and replays each through the exact same handler a live upload uses, sequentially (not in parallel, since e.g. the services handler mutates shared `terrainState`).
+- **Scope**: only "design" (IFC) and "services" (12d) are carried over — the only two the 3D page can currently render anything for. Design **linework** and **surfaces** (`full_tin`) are 2D-only features with no 3D rendering counterpart at all yet; stashing them would silently do nothing useful once replayed on the 3D side, so they're deliberately left out until that 3D rendering work exists (see "Open items").
+
+**Verified end-to-end against real files, through a real page navigation** (not just a simulated function call): stashed the real `260826 Service Upload.12daz` and `GT11_Foundation_Reference_Model.ifc`, then actually navigated the browser from the 2D page to `/3d.html` and confirmed the console showed `"Loading 2 file(s) carried over from the 2D view…"` immediately on load, with **zero manual action** — followed by both files loading successfully: 800 real service strings added, and the IFC georeferenced with a post-placement bounding box of **21.37 × 4.04 × 7.50 m**, exactly matching this same file's independently-verified ground-truth measurement from earlier in this project (see "IFC georeferencing — implemented and verified"). Also confirmed the failure path is graceful: stashing deliberately-corrupt file content first and replaying it produced the same clean per-file error handling a live bad-file upload would show, with no crash.
+
 ### Terrain (`src/terrain.js`) — Mapbox Terrain-RGB REMOVED 2026-08-26, imagery kept
 
 **Cameron: "the mapbox terrain should be removed, it doesn't really do
@@ -1091,3 +1103,11 @@ load without error after the rename/deletions.
     elevation at arbitrary points of another, since two independent
     drone-flight TINs won't share a triangulation) — revisit once the
     simple toggle has been used for a while and its limits are clearer.
+12. **Design linework and surfaces have no 3D rendering yet** — the
+    2D → 3D carry-over (see that section above) only replays IFC and
+    services, since those are the only two the 3D scene actually knows
+    how to draw. Building 3D support for `full_tin` surfaces (a real
+    triangle mesh, not the 2D page's flat-polygon-per-triangle rendering)
+    and for design linework (extruded/drawn similarly to services) would
+    let the carry-over cover everything the 2D page can load — worth
+    doing if the 3D scene becomes more than a deprioritised POC again.
