@@ -37,6 +37,25 @@
  *   section-intersect.js.
  */
 export function renderProfileChart(container, { totalDistanceM }, overlays = {}) {
+  // Wraps the whole body so a caller-visible error can report EXACTLY
+  // which sub-step failed — added 2026-08-27 after "Failed to build
+  // profile while rendering the chart: Maximum call stack size exceeded"
+  // recurred with only 7 line crossings and 0 surface chords, ruling out
+  // every large-array theory already fixed/verified for this file (see
+  // README). Something is throwing this specific RangeError even at
+  // trivial size, and static reading hasn't found it — this narrows it
+  // down empirically instead.
+  let step = "setup";
+  try {
+    return renderProfileChartInner(container, { totalDistanceM }, overlays, (s) => {
+      step = s;
+    });
+  } catch (err) {
+    throw new Error(`renderProfileChart(${step}): ${err.message}`, { cause: err });
+  }
+}
+
+function renderProfileChartInner(container, { totalDistanceM }, overlays, setStep) {
   const { lineCrossings = [], surfaceChords = [] } = overlays;
   const width = 640;
   const height = 320;
@@ -50,6 +69,8 @@ export function renderProfileChart(container, { totalDistanceM }, overlays = {})
       `this line (terrain is no longer plotted — see README).</p>`;
     return;
   }
+
+  setStep("computing min/max elevation");
 
   // Built with a manual reduce, NOT Math.min(...arr)/Math.max(...arr) —
   // spreading into a function call has an engine-specific argument-count
@@ -81,6 +102,7 @@ export function renderProfileChart(container, { totalDistanceM }, overlays = {})
   const distanceAtX = (svgX) =>
     Math.min(totalDistanceM, Math.max(0, ((svgX - margin.left) / plotW) * totalDistanceM));
 
+  setStep("building Y-axis ticks");
   // A handful of Y gridlines/labels.
   const yTickCount = 5;
   const yTicks = Array.from({ length: yTickCount }, (_, i) => yMin + (i / (yTickCount - 1)) * (yMax - yMin));
@@ -94,6 +116,7 @@ export function renderProfileChart(container, { totalDistanceM }, overlays = {})
     })
     .join("");
 
+  setStep("building X-axis ticks");
   // A handful of X gridlines/labels (distance).
   const xTickCount = 5;
   const xTicks = Array.from({ length: xTickCount }, (_, i) => (i / (xTickCount - 1)) * totalDistanceM);
@@ -104,6 +127,7 @@ export function renderProfileChart(container, { totalDistanceM }, overlays = {})
     })
     .join("");
 
+  setStep(`building surface chord SVG (${surfaceChords.length} chord(s))`);
   // Surfaces: each triangle's chord drawn independently (see
   // section-intersect.js's header for why adjacent triangles' chords
   // naturally read as one continuous line without extra stitching).
@@ -116,6 +140,7 @@ export function renderProfileChart(container, { totalDistanceM }, overlays = {})
     })
     .join("");
 
+  setStep(`building line-crossing SVG (${lineCrossings.length} crossing(s))`);
   // Services/design linework: a marker dot at the real crossing elevation,
   // plus a faint drop-line to the bottom axis so a deeply-buried crossing
   // is still easy to spot.
@@ -132,6 +157,10 @@ export function renderProfileChart(container, { totalDistanceM }, overlays = {})
     })
     .join("");
 
+  setStep("building legend HTML");
+  const legend = legendHtml(lineCrossings, surfaceChords);
+
+  setStep("assigning innerHTML");
   container.innerHTML = `
     <svg viewBox="0 0 ${width} ${height}" style="width:100%; height:auto; display:block; background:#1b1d20;">
       ${yTicksSvg}
@@ -148,9 +177,10 @@ export function renderProfileChart(container, { totalDistanceM }, overlays = {})
       <rect class="snap-capture" x="${margin.left}" y="${margin.top}" width="${plotW}" height="${plotH}" fill="transparent" />
     </svg>
     <div class="snap-readout" style="min-height:16px; margin:4px 2px 0; font-size:12px; color:#ffb454;"></div>
-    ${legendHtml(lineCrossings, surfaceChords)}
+    ${legend}
   `;
 
+  setStep("wiring the live snap");
   wireLiveSnap(container, { x, y, distanceAtX, margin, plotH, lineCrossings, surfaceChords });
 }
 
