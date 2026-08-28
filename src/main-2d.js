@@ -1101,7 +1101,24 @@ function wireMapToolbar() {
       profilePane.classList.add("active");
       afterPaneToggle();
       profileChartEl.innerHTML = "";
+      // Broken into separately-labelled stages with sizes attached to any
+      // error message (2026-08-27) — Cameron kept hitting "Maximum call
+      // stack size exceeded" here even after two rounds of real fixes
+      // (see README) which were re-verified against synthetic data far
+      // bigger than anything realistic without reproducing it. Since I
+      // can't get a real browser's devtools/stack trace from this
+      // session, the next-best diagnostic is having the app report WHICH
+      // stage failed and how much data was involved, directly in the
+      // status bar, without needing Cameron to open devtools at all.
+      let stage = "reading visible layers";
       try {
+        const visibleLineFeatures = [
+          ...servicesController.getVisibleFeatures(),
+          ...designLineworkController.getVisibleFeatures(),
+        ];
+        const visibleSurfaceFeatures = designSurfaceController.getVisibleFeatures();
+
+        stage = `computing line length (line has ${lineCoordsWgs84.length} point(s))`;
         const totalDistanceM = lineLengthM(lineCoordsWgs84);
 
         // Cut-line crossings against whatever's currently checked "on" in
@@ -1113,12 +1130,12 @@ function wireMapToolbar() {
         // No terrain sampling any more either — removed the same day per
         // Cameron: "the mapbox terrain should be removed, it doesn't
         // really do anything relevant" (see README "Terrain").
+        stage =
+          `computing crossings (${visibleLineFeatures.length} visible line feature(s), ` +
+          `${visibleSurfaceFeatures.length} visible surface triangle(s))`;
         const crossings = computeSectionCrossings(lineCoordsWgs84, {
-          lineFeatures: [
-            ...servicesController.getVisibleFeatures(),
-            ...designLineworkController.getVisibleFeatures(),
-          ],
-          surfaceFeatures: designSurfaceController.getVisibleFeatures(),
+          lineFeatures: visibleLineFeatures,
+          surfaceFeatures: visibleSurfaceFeatures,
         });
 
         const crossingCount = crossings.lineCrossings.length + crossings.surfaceChords.length;
@@ -1130,10 +1147,14 @@ function wireMapToolbar() {
               "design elevation — drag across the chart for a live surface↔service delta height. " +
               "IFC design geometry isn't intersected yet (only its footprint is tracked in 2D)."
             : "No currently-visible service/linework/surface layer crosses this line.");
+
+        stage =
+          `rendering the chart (${crossings.lineCrossings.length} line crossing(s), ` +
+          `${crossings.surfaceChords.length} surface chord(s))`;
         renderProfileChart(profileChartEl, { totalDistanceM }, crossings);
       } catch (err) {
-        console.error(err);
-        profileSummaryEl.textContent = `Failed to build profile: ${err.message}`;
+        console.error(`[K2-2D] Section profile failed while ${stage}:`, err);
+        profileSummaryEl.textContent = `Failed to build profile while ${stage}: ${err.message}`;
       }
     },
   });
