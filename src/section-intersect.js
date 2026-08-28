@@ -96,6 +96,27 @@ function crossingsForLine(sectionCoords2d, sectionCum, feature) {
 }
 
 /**
+ * Barycentric weights of 2D point `p` in triangle `(a, b, c)`, or `null`
+ * if `p` is outside it (a small negative tolerance treats the boundary
+ * itself as "inside", so a point sitting exactly on an edge — the usual
+ * case when this is also being found as an edge crossing — doesn't get
+ * dropped by float rounding).
+ */
+function barycentric2D(p, a, b, c) {
+  const v0x = b[0] - a[0], v0y = b[1] - a[1];
+  const v1x = c[0] - a[0], v1y = c[1] - a[1];
+  const v2x = p[0] - a[0], v2y = p[1] - a[1];
+  const den = v0x * v1y - v1x * v0y;
+  if (Math.abs(den) < 1e-14) return null; // degenerate triangle
+  const v = (v2x * v1y - v1x * v2y) / den;
+  const w = (v0x * v2y - v2x * v0y) / den;
+  const u = 1 - v - w;
+  const eps = -1e-9;
+  if (u < eps || v < eps || w < eps) return null;
+  return { u, v, w };
+}
+
+/**
  * Where the section line crosses a triangulated surface, as a list of
  * chords (one per triangle actually crossed) — see this file's header
  * for why independent per-triangle chords, drawn in the surface's own
@@ -103,15 +124,27 @@ function crossingsForLine(sectionCoords2d, sectionCum, feature) {
  * several adjacent triangles (they share the crossing point on the
  * shared edge) without needing to explicitly stitch them together.
  *
+ * Two kinds of hit, combined: (1) where the line crosses one of the
+ * triangle's 3 EDGES, and (2) any section-line VERTEX that lies INSIDE
+ * the triangle. (2) was missing originally (2026-08-27, found by
+ * Cameron: "reckon its only trying to hit the edge of the triangles only
+ * for the surface and not the actual plane") — a section line short
+ * enough to start and end entirely within one triangle, without ever
+ * crossing back out through an edge, produced ZERO edge-crossings and
+ * silently vanished, even though the whole line legitimately sat on that
+ * triangle's surface the entire time. Barycentric-interpolating the
+ * elevation at any inside vertex (not just edge crossings) fixes this.
+ *
  * @param {Array<[number, number]>} sectionCoords2d
  * @param {number[]} sectionCum
  * @param {GeoJSON.Feature} triangleFeature - Polygon, one triangle, 3D ring
- * @returns {Array<{ distanceM: number, elevationAhd: number }>} 0, 1 (rare,
- *   a vertex-only graze), or 2 points for this one triangle
+ * @returns {Array<{ distanceM: number, elevationAhd: number }>}
  */
 function crossingsForTriangle(sectionCoords2d, sectionCum, triangleFeature) {
   const ring = triangleFeature.geometry.coordinates[0]; // [v0, v1, v2, v0]
+  const [v0, v1, v2] = ring; // the triangle's 3 real vertices (ring[3] just closes back to v0)
   const hits = [];
+
   for (let e = 0; e < ring.length - 1; e++) {
     const b1 = ring[e];
     const b2 = ring[e + 1];
@@ -127,6 +160,14 @@ function crossingsForTriangle(sectionCoords2d, sectionCum, triangleFeature) {
       hits.push({ distanceM, elevationAhd });
     }
   }
+
+  for (let i = 0; i < sectionCoords2d.length; i++) {
+    const bary = barycentric2D(sectionCoords2d[i], v0, v1, v2);
+    if (!bary) continue;
+    const elevationAhd = bary.u * v0[2] + bary.v * v1[2] + bary.w * v2[2];
+    hits.push({ distanceM: sectionCum[i], elevationAhd });
+  }
+
   hits.sort((a, b) => a.distanceM - b.distanceM);
   return hits;
 }
