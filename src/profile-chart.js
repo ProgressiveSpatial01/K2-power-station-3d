@@ -179,6 +179,13 @@ function renderProfileChartInner(container, { totalDistanceM }, overlays, setSte
     <div class="snap-mode-toggle" style="display:flex; gap:6px; margin:6px 2px 0;">
       <button type="button" data-mode="surface-service" style="flex:1; font-size:11px; padding:4px 0; border-radius:4px; border:1px solid #2fa3ff; background:#2fa3ff; color:#fff; cursor:pointer;">Surface ↔ Pipe</button>
       <button type="button" data-mode="service-service" style="flex:1; font-size:11px; padding:4px 0; border-radius:4px; border:1px solid #444; background:#111; color:#ccc; cursor:pointer;">Pipe ↔ Pipe</button>
+      <button type="button" data-mode="surface-surface" style="flex:1; font-size:11px; padding:4px 0; border-radius:4px; border:1px solid #444; background:#111; color:#ccc; cursor:pointer;">Surface ↔ Surface</button>
+    </div>
+    <div class="snap-surface-select" style="display:none; gap:6px; margin:4px 2px 0; align-items:center;">
+      <span class="snap-surface-a-label" style="font-size:11px; color:#8a8f98; flex-shrink:0;">Surface:</span>
+      <select class="snap-surface-a" style="flex:1; min-width:0; font-size:11px; background:#111; color:#ddd; border:1px solid #444; border-radius:4px;"></select>
+      <span class="snap-surface-b-label" style="display:none; font-size:11px; color:#8a8f98; flex-shrink:0;">vs:</span>
+      <select class="snap-surface-b" style="display:none; flex:1; min-width:0; font-size:11px; background:#111; color:#ddd; border:1px solid #444; border-radius:4px;"></select>
     </div>
     <div class="snap-readout" style="min-height:16px; margin:4px 2px 0; font-size:12px; color:#ffb454;"></div>
     ${legend}
@@ -194,19 +201,30 @@ function renderProfileChartInner(container, { totalDistanceM }, overlays, setSte
  * is the whole reason margin/plotH/x/y/distanceAtX get passed in, so the
  * maths here matches what was actually drawn exactly.
  *
- * Two modes (added 2026-08-28, per Cameron: "enable the option to switch
- * between snapping depths to a surface or a point to point, eg if we
- * want to know the depth between 2 pipes"):
- *  - "surface-service" (default): point A follows the design surface's
- *    own elevation directly under the cursor; point B snaps to the
- *    nearest service/linework crossing to the cursor. Same as before.
+ * Three modes (added 2026-08-28, extended 2026-08-31 per Cameron: "in
+ * the section view can you switch between surfaces for the heights? can
+ * you also add another option of comparing the 2 surfaces?"):
+ *  - "surface-service" (default): point A follows ONE selected design
+ *    surface's own elevation directly under the cursor; point B snaps
+ *    to the nearest service/linework crossing to the cursor.
  *  - "service-service": point A and B both snap to services — the two
  *    NEAREST crossings to the cursor position, so hovering near two
  *    close-together pipes compares those two directly (e.g. clearance
- *    between two crossing services), rather than either against the
- *    surface.
- * Both modes report the same three numbers (per Cameron: "as well as
- * depths give 2d and 3d distance between pipes") — vertical delta
+ *    between two crossing services), rather than either against a surface.
+ *  - "surface-surface": point A and B each follow a SEPARATELY selected
+ *    surface's own elevation under the cursor — e.g. comparing this
+ *    month's vs last month's drone-flight surface at any point along the
+ *    cut, not just the whole-map A/B visibility toggle surface-compare.js
+ *    already provides (see its own docstring) — this is a precise,
+ *    per-point reading instead.
+ * Originally (2026-08-28) the surface snap silently used whichever
+ * loaded surface's chord happened to cover that point first — fine with
+ * one surface loaded, ambiguous with two or more overlapping ones. Now
+ * explicit: a dropdown picks which surface feeds each surface-driven
+ * snap point, shown only in the modes that need it.
+ *
+ * All three modes report the same three numbers (per Cameron: "as well
+ * as depths give 2d and 3d distance between pipes") — vertical delta
  * (height/depth), 2D distance (horizontal separation along the cut
  * line — both snapped points lie ON that line by construction, so this
  * is exact, not an approximation), and 3D distance (straight-line
@@ -222,9 +240,29 @@ function wireLiveSnap(container, { x, y, distanceAtX, margin, plotH, lineCrossin
   const dotB = container.querySelector(".snap-service");
   const readout = container.querySelector(".snap-readout");
   const modeButtons = [...container.querySelectorAll(".snap-mode-toggle button")];
+  const surfaceSelectRow = container.querySelector(".snap-surface-select");
+  const selectA = container.querySelector(".snap-surface-a");
+  const selectB = container.querySelector(".snap-surface-b");
+  const labelB = container.querySelector(".snap-surface-b-label");
   if (!svg || !captureRect) return;
 
   let mode = "surface-service";
+
+  // Every distinct surface name present, in first-seen order (matches
+  // section-intersect.js's chord order, which follows upload order) —
+  // used to populate the surface-picker dropdown(s).
+  const surfaceNames = [...new Set(surfaceChords.map((c) => c.surfaceName))];
+  for (const select of [selectA, selectB]) {
+    select.replaceChildren(
+      ...surfaceNames.map((name) => {
+        const opt = document.createElement("option");
+        opt.value = name;
+        opt.textContent = name;
+        return opt;
+      })
+    );
+  }
+  if (surfaceNames.length > 1) selectB.value = surfaceNames[1];
 
   function updateModeButtonStyles() {
     for (const btn of modeButtons) {
@@ -234,10 +272,19 @@ function wireLiveSnap(container, { x, y, distanceAtX, margin, plotH, lineCrossin
       btn.style.borderColor = active ? "#2fa3ff" : "#444";
     }
   }
+  function updateSurfaceSelectVisibility() {
+    const needsA = mode === "surface-service" || mode === "surface-surface";
+    const needsB = mode === "surface-surface";
+    surfaceSelectRow.style.display = needsA ? "flex" : "none";
+    labelB.style.display = needsB ? "inline" : "none";
+    selectB.style.display = needsB ? "inline-block" : "none";
+  }
+  updateSurfaceSelectVisibility();
   for (const btn of modeButtons) {
     btn.addEventListener("click", () => {
       mode = btn.dataset.mode;
       updateModeButtonStyles();
+      updateSurfaceSelectVisibility();
     });
   }
 
@@ -248,8 +295,10 @@ function wireLiveSnap(container, { x, y, distanceAtX, margin, plotH, lineCrossin
     return pt.matrixTransform(svg.getScreenCTM().inverse());
   }
 
-  function elevationOnSurfaceAt(distanceM) {
+  /** @param {string} [surfaceName] - restrict to one surface; omit to match any (original single-surface behaviour) */
+  function elevationOnSurfaceAt(distanceM, surfaceName) {
     for (const chord of surfaceChords) {
+      if (surfaceName != null && chord.surfaceName !== surfaceName) continue;
       const pts = chord.points;
       if (distanceM < pts[0].distanceM || distanceM > pts[pts.length - 1].distanceM) continue;
       for (let i = 0; i < pts.length - 1; i++) {
@@ -283,7 +332,13 @@ function wireLiveSnap(container, { x, y, distanceAtX, margin, plotH, lineCrossin
       const [a = null, b = null] = nearestServiceCrossings(distanceM, 2);
       return { a, b };
     }
-    const surfaceHit = elevationOnSurfaceAt(distanceM);
+    if (mode === "surface-surface") {
+      return {
+        a: elevationOnSurfaceAt(distanceM, selectA.value),
+        b: elevationOnSurfaceAt(distanceM, selectB.value),
+      };
+    }
+    const surfaceHit = elevationOnSurfaceAt(distanceM, selectA.value);
     const [serviceHit = null] = nearestServiceCrossings(distanceM, 1);
     return { a: surfaceHit, b: serviceHit };
   }
@@ -338,14 +393,22 @@ function wireLiveSnap(container, { x, y, distanceAtX, margin, plotH, lineCrossin
         `${pointA.label} (RL ${pointA.elevationAhd.toFixed(3)}) ↔ ${pointB.label} (RL ${pointB.elevationAhd.toFixed(3)})`;
     } else {
       connector.style.display = "none";
-      readout.textContent =
-        mode === "service-service"
-          ? "Need at least 2 service/linework crossings near the cursor to compare in this mode."
-          : !pointA && !pointB
-            ? "No surface or service data under the cursor here."
+      if (mode === "service-service") {
+        readout.textContent = "Need at least 2 service/linework crossings near the cursor to compare in this mode.";
+      } else if (mode === "surface-surface") {
+        readout.textContent =
+          !pointA && !pointB
+            ? `Neither "${selectA.value}" nor "${selectB.value}" covers this point along the line.`
             : !pointA
-              ? "No loaded surface covers this point (nearest service shown, no delta to compare against)."
-              : "No service/linework crossing loaded to compare against.";
+              ? `"${selectA.value}" doesn't cover this point along the line.`
+              : `"${selectB.value}" doesn't cover this point along the line.`;
+      } else {
+        readout.textContent = !pointA && !pointB
+          ? "No surface or service data under the cursor here."
+          : !pointA
+            ? "No loaded surface covers this point (nearest service shown, no delta to compare against)."
+            : "No service/linework crossing loaded to compare against.";
+      }
     }
   }
 
@@ -372,7 +435,7 @@ function legendHtml(lineCrossings, surfaceChords) {
   if (surfaceChords.length > 0) {
     parts.push(`<span>▬</span> Design surface (hover for name)`);
   }
-  parts.push(`<span style="color:#ffb454">┊</span> Drag across the chart for a live delta height + 2D/3D distance (buttons above switch Surface↔Pipe / Pipe↔Pipe)`);
+  parts.push(`<span style="color:#ffb454">┊</span> Drag across the chart for a live delta height + 2D/3D distance (buttons above switch Surface↔Pipe / Pipe↔Pipe / Surface↔Surface; pick which surface(s) from the dropdown)`);
   return `<p style="margin:6px 2px 0; font-size:11px; color:#8a8f98;">${parts.join(" &nbsp;·&nbsp; ")}</p>`;
 }
 
