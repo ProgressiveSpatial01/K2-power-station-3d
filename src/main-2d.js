@@ -74,17 +74,6 @@ const map = new mapboxgl.Map({
 
 map.addControl(new mapboxgl.NavigationControl(), "bottom-right");
 
-// Last-loaded IFC data, kept so its sources/layers can be re-added after
-// a base style switch (Mapbox GL wipes all custom sources/layers on
-// map.setStyle() — see wireBaseStyleGroup()). The 12d-derived layers
-// (services, design linework) manage their own equivalent state
-// internally — see createLineFeatureController() below.
-const state = {
-  ifcFeature: null,
-  ifcFootprintFeature: null,
-  ifcRowAdded: false,
-};
-
 // Whether a measure/section draw tool is currently active — checked by
 // every clickable layer's popup handler below (IFC point/footprint,
 // services/design-linework, design surfaces) so they can get out of the
@@ -134,12 +123,26 @@ const designGroup = createLayerGroup(layerTreeEl, { label: "Design" });
 // row added elsewhere) — per Cameron (2026-08-26): the Design upload needs
 // to support linework, .ifc, and (eventually) surfaces as different kinds
 // of design data sharing one upload slot, not just IFC.
-const designLineworkGroup = designGroup.addSubgroup({ label: "Linework" });
+// Each `onDelete` below references its controller before that controller
+// is actually declared (further down the file) — safe, same pattern as
+// surfaceCompareControl's setSurfaceVisible callback: the arrow function
+// body only ever RUNS when a user clicks that group's delete button,
+// long after the whole module has finished initialising.
+const designLineworkGroup = designGroup.addSubgroup({
+  label: "Linework",
+  onDelete: () => designLineworkController.removeAll(),
+});
 // "Surfaces" (added 2026-08-26, first real sample "FL Surface.12daz") —
 // same Design upload slot, a third kind of design data alongside IFC and
 // linework. See buildSurfaceFeaturesFrom12d() below for the file format.
-const designSurfaceGroup = designGroup.addSubgroup({ label: "Surfaces" });
-const servicesGroup = createLayerGroup(layerTreeEl, { label: "Underground Services" });
+const designSurfaceGroup = designGroup.addSubgroup({
+  label: "Surfaces",
+  onDelete: () => designSurfaceController.removeAll(),
+});
+const servicesGroup = createLayerGroup(layerTreeEl, {
+  label: "Underground Services",
+  onDelete: () => servicesController.removeAll(),
+});
 
 wireBaseStyleGroup();
 
@@ -193,7 +196,7 @@ function wireBaseStyleGroup() {
 
 /** Re-add every custom source/layer currently loaded. Safe to call repeatedly. */
 function addCustomLayers() {
-  if (state.ifcFeature) addOrUpdateIfcLayer(state.ifcFeature, state.ifcFootprintFeature);
+  ifcController.reAddIfPresent();
   servicesController.reAddIfPresent();
   designLineworkController.reAddIfPresent();
   designSurfaceController.reAddIfPresent();
@@ -206,18 +209,60 @@ const FOOTPRINT_FILL_LAYER_ID = "ifc-design-footprint-fill";
 const FOOTPRINT_LINE_LAYER_ID = "ifc-design-footprint-line";
 
 /**
- * @param {GeoJSON.Feature} pointFeature - the project base point (always available)
- * @param {GeoJSON.Feature | null} footprintFeature - the bounding-box outline
- *   (see ifc.js computeFootprintCornersScene) — null if it couldn't be computed
- *   (e.g. IFC geometry load failed), in which case only the point is shown.
+ * Controller for IFC design point + footprint features. Upgraded
+ * 2026-08-31 from a single-slot `state.ifcFeature`/`ifcFootprintFeature`
+ * pair — which OVERWROTE the previous IFC design's marker/footprint on
+ * every new `.ifc` upload, with only one ever-created sidebar row — to a
+ * proper multi-design accumulator, matching the pattern already used for
+ * services/design-linework/design-surfaces. Cameron: "is it at a point
+ * where we can import multiple files now instead of the 2 we have been
+ * testing (as in does it overwrite what is currently imported everytime
+ * we import again)" — it did, specifically for IFC; now it doesn't.
+ *
+ * Keyed on the uploaded file's own name (`ifcId`) — good enough here
+ * unlike surfaces' `surfaceId`, since a single IFC upload is always
+ * exactly one design with no internal per-record name to collide with.
  */
-function addOrUpdateIfcLayer(pointFeature, footprintFeature) {
-  const pointData = { type: "FeatureCollection", features: [pointFeature] };
+function createIfcFeatureController({ group }) {
+  const pointFeatures = new Map(); // ifcId -> point feature
+  const footprintFeatures = new Map(); // ifcId -> footprint feature (absent if geometry load failed)
+  const checkedIds = new Set();
+  const checkboxes = new Map();
 
-  if (map.getSource(POINT_SOURCE_ID)) {
-    map.getSource(POINT_SOURCE_ID).setData(pointData);
-  } else {
-    map.addSource(POINT_SOURCE_ID, { type: "geojson", data: pointData });
+  function applyFilter() {
+    const ids = [...checkedIds];
+    if (map.getLayer(POINT_LAYER_ID)) {
+      map.setFilter(POINT_LAYER_ID, ["in", ["get", "ifcId"], ["literal", ids]]);
+    }
+    if (map.getLayer(FOOTPRINT_FILL_LAYER_ID)) {
+      map.setFilter(FOOTPRINT_FILL_LAYER_ID, ["in", ["get", "ifcId"], ["literal", ids]]);
+      map.setFilter(FOOTPRINT_LINE_LAYER_ID, ["in", ["get", "ifcId"], ["literal", ids]]);
+    }
+  }
+
+  function createLayers() {
+    map.addSource(POINT_SOURCE_ID, {
+      type: "geojson",
+      data: { type: "FeatureCollection", features: [...pointFeatures.values()] },
+    });
+    map.addSource(FOOTPRINT_SOURCE_ID, {
+      type: "geojson",
+      data: { type: "FeatureCollection", features: [...footprintFeatures.values()] },
+    });
+    map.addLayer({
+      id: FOOTPRINT_FILL_LAYER_ID,
+      type: "fill",
+      source: FOOTPRINT_SOURCE_ID,
+      paint: { "fill-color": "#ffb454", "fill-opacity": 0.25 },
+    });
+    map.addLayer({
+      id: FOOTPRINT_LINE_LAYER_ID,
+      type: "line",
+      source: FOOTPRINT_SOURCE_ID,
+      paint: { "line-color": "#ffb454", "line-width": 2 },
+    });
+    // Point layer added last (on top) so a design's base-point marker
+    // stays visibly above its own (or any other design's) footprint fill.
     map.addLayer({
       id: POINT_LAYER_ID,
       type: "circle",
@@ -241,69 +286,88 @@ function addOrUpdateIfcLayer(pointFeature, footprintFeature) {
         )
         .addTo(map);
     });
+    map.on("click", FOOTPRINT_FILL_LAYER_ID, (e) => {
+      if (drawToolState.active) return; // let the click through to the active draw tool instead
+      const p = e.features[0].properties;
+      new mapboxgl.Popup()
+        .setLngLat(e.lngLat)
+        .setHTML(
+          `<b>${p.name}</b><br>` +
+            "Axis-aligned bounding-box outline (not a true footprint " +
+            "polygon for rotated/non-rectangular designs — see " +
+            "ifc.js computeFootprintCornersScene())."
+        )
+        .addTo(map);
+    });
+    applyFilter();
   }
 
-  if (footprintFeature) {
-    const footprintData = { type: "FeatureCollection", features: [footprintFeature] };
-    if (map.getSource(FOOTPRINT_SOURCE_ID)) {
-      map.getSource(FOOTPRINT_SOURCE_ID).setData(footprintData);
-    } else {
-      map.addSource(FOOTPRINT_SOURCE_ID, { type: "geojson", data: footprintData });
-      map.addLayer(
-        {
-          id: FOOTPRINT_FILL_LAYER_ID,
-          type: "fill",
-          source: FOOTPRINT_SOURCE_ID,
-          paint: { "fill-color": "#ffb454", "fill-opacity": 0.25 },
-        },
-        POINT_LAYER_ID // insert below the point layer so the base-point marker stays visibly on top
-      );
-      map.addLayer(
-        {
-          id: FOOTPRINT_LINE_LAYER_ID,
-          type: "line",
-          source: FOOTPRINT_SOURCE_ID,
-          paint: { "line-color": "#ffb454", "line-width": 2 },
-        },
-        POINT_LAYER_ID
-      );
-      map.on("click", FOOTPRINT_FILL_LAYER_ID, (e) => {
-        if (drawToolState.active) return; // let the click through to the active draw tool instead
-        const p = e.features[0].properties;
-        new mapboxgl.Popup()
-          .setLngLat(e.lngLat)
-          .setHTML(
-            `<b>${p.name}</b><br>` +
-              "Axis-aligned bounding-box outline (not a true footprint " +
-              "polygon for rotated/non-rectangular designs — see " +
-              "ifc.js computeFootprintCornersScene())."
-          )
-          .addTo(map);
+  function refreshData() {
+    if (map.getSource(POINT_SOURCE_ID)) {
+      map.getSource(POINT_SOURCE_ID).setData({ type: "FeatureCollection", features: [...pointFeatures.values()] });
+      map.getSource(FOOTPRINT_SOURCE_ID).setData({
+        type: "FeatureCollection",
+        features: [...footprintFeatures.values()],
       });
+      applyFilter();
+    } else {
+      createLayers();
     }
   }
 
-  // Guard against re-adding a duplicate sidebar row: this function reruns
-  // its "create" branch every time a base-style switch wipes Mapbox's
-  // custom layers (see map.on("style.load", ...) above), but the sidebar
-  // row itself should only ever be created once.
-  if (!state.ifcRowAdded) {
-    state.ifcRowAdded = true;
-    designGroup.addRow({
-      label: pointFeature.properties.name,
-      color: "#ffb454",
-      checked: true,
-      onChange: (checked) => {
-        const vis = checked ? "visible" : "none";
-        map.setLayoutProperty(POINT_LAYER_ID, "visibility", vis);
-        if (map.getLayer(FOOTPRINT_FILL_LAYER_ID)) {
-          map.setLayoutProperty(FOOTPRINT_FILL_LAYER_ID, "visibility", vis);
-          map.setLayoutProperty(FOOTPRINT_LINE_LAYER_ID, "visibility", vis);
-        }
-      },
-    });
+  /**
+   * Removes one IFC design entirely — added 2026-08-31, per Cameron:
+   * "we also need to be able to rename, edit and delete layers/groups."
+   */
+  function removeDesign(ifcId) {
+    pointFeatures.delete(ifcId);
+    footprintFeatures.delete(ifcId);
+    checkedIds.delete(ifcId);
+    checkboxes.delete(ifcId);
+    refreshData();
   }
+
+  return {
+    /**
+     * @param {string} ifcId - the uploaded file's name
+     * @param {GeoJSON.Feature} pointFeature - the project base point (always available)
+     * @param {GeoJSON.Feature | null} footprintFeature - the bounding-box outline,
+     *   null if it couldn't be computed (e.g. geometry load failed) — point-only in that case
+     */
+    setDesign(ifcId, pointFeature, footprintFeature) {
+      pointFeature.properties.ifcId = ifcId;
+      if (footprintFeature) footprintFeature.properties.ifcId = ifcId;
+
+      const isNew = !pointFeatures.has(ifcId);
+      pointFeatures.set(ifcId, pointFeature);
+      if (footprintFeature) footprintFeatures.set(ifcId, footprintFeature);
+      refreshData();
+
+      if (isNew) {
+        checkedIds.add(ifcId);
+        const input = group.addRow({
+          label: ifcId,
+          color: "#ffb454",
+          checked: true,
+          onChange: (checked) => {
+            if (checked) checkedIds.add(ifcId);
+            else checkedIds.delete(ifcId);
+            applyFilter();
+          },
+          onDelete: () => removeDesign(ifcId),
+        });
+        checkboxes.set(ifcId, input);
+      }
+    },
+    /** Re-create the source/layers after a base-style switch wiped them. No-op if nothing's loaded yet. */
+    reAddIfPresent() {
+      if (pointFeatures.size === 0 || map.getSource(POINT_SOURCE_ID)) return;
+      createLayers();
+    },
+  };
 }
+
+const ifcController = createIfcFeatureController({ group: designGroup });
 
 /**
  * Generic controller for a "many 12d line-string records, grouped by
@@ -343,18 +407,46 @@ function createLineFeatureController({ sourceId, layerId, group, popupHtml }) {
     map.setFilter(layerId, ["in", ["get", "model"], ["literal", [...checkedGroups]]]);
   }
 
+  // Was hardcoded to one flat blue for every leaf row regardless of the
+  // real per-record colour actually drawn on the map — found 2026-08-31,
+  // Cameron: "the legend of the services isnt reflecting the actual line
+  // colours." A `model` group can in principle contain records with more
+  // than one real colour (12d doesn't enforce one colour per discipline),
+  // so this picks the MOST COMMON real colour among that model's
+  // features as the representative swatch, rather than just the first
+  // one found — closer to "the colour you'll actually mostly see on the
+  // map for this group" when there's any variance.
+  function colourForModel(fullPath) {
+    const counts = new Map();
+    for (const f of allFeatures) {
+      if (f.properties.model !== fullPath) continue;
+      const c = f.properties.colour;
+      counts.set(c, (counts.get(c) ?? 0) + 1);
+    }
+    let best = null;
+    let bestCount = 0;
+    for (const [c, n] of counts) {
+      if (n > bestCount) {
+        best = c;
+        bestCount = n;
+      }
+    }
+    return best ?? "#2fa3ff"; // fallback — shouldn't happen, every real feature has a colour
+  }
+
   function renderTree(g, nodes) {
     for (const node of nodes) {
       if (node.type === "leaf") {
         g.addRow({
           label: node.label,
-          color: "#2fa3ff",
+          color: colourForModel(node.fullPath),
           checked: checkedGroups.has(node.fullPath),
           onChange: (checked) => {
             if (checked) checkedGroups.add(node.fullPath);
             else checkedGroups.delete(node.fullPath);
             applyFilter();
           },
+          onDelete: () => removeModel(node.fullPath),
         });
       } else {
         const sub = g.addSubgroup({ label: node.label });
@@ -372,6 +464,28 @@ function createLineFeatureController({ sourceId, layerId, group, popupHtml }) {
     checkedGroups.clear();
     for (const m of knownModelPaths) checkedGroups.add(m); // default: everything checked
 
+    group.clear();
+    renderTree(group, buildModelTree([...knownModelPaths]));
+  }
+
+  /**
+   * Removes every feature belonging to one `model` path — added
+   * 2026-08-31, per Cameron: "we also need to be able to rename, edit
+   * and delete layers/groups." Rebuilds the tree afterward via the exact
+   * same mechanism additions already use (rebuildTreeIfNeeded), just
+   * starting from a shrunken `knownModelPaths` instead of a grown one.
+   */
+  function removeModel(fullPath) {
+    const remaining = allFeatures.filter((f) => f.properties.model !== fullPath);
+    allFeatures.length = 0;
+    for (const f of remaining) allFeatures.push(f);
+    knownModelPaths.delete(fullPath);
+    checkedGroups.delete(fullPath);
+
+    if (map.getSource(sourceId)) {
+      map.getSource(sourceId).setData({ type: "FeatureCollection", features: allFeatures });
+    }
+    applyFilter();
     group.clear();
     renderTree(group, buildModelTree([...knownModelPaths]));
   }
@@ -428,6 +542,10 @@ function createLineFeatureController({ sourceId, layerId, group, popupHtml }) {
      */
     getVisibleFeatures() {
       return allFeatures.filter((f) => checkedGroups.has(f.properties.model));
+    },
+    /** Deletes every loaded model group at once — wired to this layer's own group/subgroup delete button. */
+    removeAll() {
+      for (const m of [...knownModelPaths]) removeModel(m);
     },
   };
 }
@@ -565,6 +683,30 @@ function createSurfaceFeatureController({ sourceId, fillLayerId, lineLayerId, gr
     map.setFilter(lineLayerId, ["in", ["get", "surfaceId"], ["literal", [...checkedSurfaces]]]);
   }
 
+  function setSourceData() {
+    const data = { type: "FeatureCollection", features: allFeatures };
+    if (map.getSource(sourceId)) map.getSource(sourceId).setData(data);
+  }
+
+  /**
+   * Removes one surface entirely (all its triangle features, its sidebar
+   * row, its compare-control eligibility) — added 2026-08-31, per
+   * Cameron: "we also need to be able to rename, edit and delete
+   * layers/groups." Rename is generic (layer-tree.js), this is the
+   * data-removal half delete also needs.
+   */
+  function removeSurface(id) {
+    const remaining = allFeatures.filter((f) => f.properties.surfaceId !== id);
+    allFeatures.length = 0;
+    for (const f of remaining) allFeatures.push(f);
+    knownSurfaceIds.delete(id);
+    checkedSurfaces.delete(id);
+    checkboxes.delete(id);
+    setSourceData();
+    applyFilter();
+    onSurfacesChanged?.([...knownSurfaceIds]);
+  }
+
   function addSidebarRowsIfNeeded(newFeatures) {
     let added = false;
     for (const f of newFeatures) {
@@ -582,6 +724,7 @@ function createSurfaceFeatureController({ sourceId, fillLayerId, lineLayerId, gr
           else checkedSurfaces.delete(id);
           applyFilter();
         },
+        onDelete: () => removeSurface(id),
       });
       checkboxes.set(id, input);
     }
@@ -651,6 +794,10 @@ function createSurfaceFeatureController({ sourceId, fillLayerId, lineLayerId, gr
       if (visible) checkedSurfaces.add(id);
       else checkedSurfaces.delete(id);
       applyFilter();
+    },
+    /** Deletes every loaded surface at once — wired to the "Surfaces" subgroup's own delete button. */
+    removeAll() {
+      for (const id of [...knownSurfaceIds]) removeSurface(id);
     },
   };
 }
@@ -781,6 +928,7 @@ function wireDesignInput() {
 
 async function handleIfcDesignFile(file) {
   setStatus(`Reading ${file.name}…`);
+  let pointFeature; // set by whichever branch below actually places this design; read again once the footprint's computed
   try {
     const buffer = new Uint8Array(await file.arrayBuffer());
       const georef = extractGeoreference(buffer);
@@ -817,8 +965,8 @@ async function handleIfcDesignFile(file) {
             heightOffset: georef.heightOffset,
           },
         };
-        state.ifcFeature = feature;
-        addOrUpdateIfcLayer(feature, state.ifcFootprintFeature);
+        pointFeature = feature;
+        ifcController.setDesign(file.name, feature, null);
         map.flyTo({ center: [lon, lat], zoom: 18 });
         setStatus(
           `Placed ${file.name} at MGA50 E${georef.eastingOffset} N${georef.northingOffset} ` +
@@ -894,8 +1042,8 @@ async function handleIfcDesignFile(file) {
               heightOffset: localOrigin[2],
             },
           };
-          state.ifcFeature = feature;
-          addOrUpdateIfcLayer(feature, state.ifcFootprintFeature);
+          pointFeature = feature;
+          ifcController.setDesign(file.name, feature, null);
           map.flyTo({ center: [lon, lat], zoom: 18 });
         }
 
@@ -908,8 +1056,7 @@ async function handleIfcDesignFile(file) {
           geometry: { type: "Polygon", coordinates: [ring] },
           properties: { name: file.name },
         };
-        state.ifcFootprintFeature = footprintFeature;
-        addOrUpdateIfcLayer(state.ifcFeature, footprintFeature);
+        ifcController.setDesign(file.name, pointFeature, footprintFeature);
 
         setStatus(
           `Placed ${file.name} at MGA50 E${localOrigin[0].toFixed(3)} N${localOrigin[1].toFixed(3)} ` +

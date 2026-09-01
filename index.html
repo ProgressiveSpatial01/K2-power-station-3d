@@ -78,6 +78,24 @@
       }
       .layer-group-header, .layer-row { min-width: 0; }
 
+      /* Rename (✎) / delete (🗑) affordances (2026-08-31) — low-key
+         until you actually reach for them: a faint always-visible hint,
+         full strength on hovering the row/group, and a highlight on
+         hovering the button itself. Delete only appears where a caller
+         actually wired an onDelete — see layer-tree.js. */
+      .layer-icon-btn {
+        flex-shrink: 0; margin-left: auto; background: none; border: none; cursor: pointer;
+        font-size: 11px; line-height: 1; padding: 2px 3px; border-radius: 3px;
+        color: #8a8f98; opacity: 0.35;
+      }
+      .layer-row:hover .layer-icon-btn, .layer-group-header:hover .layer-icon-btn { opacity: 1; }
+      .layer-icon-btn:hover { background: #3a3d42; color: #fff; }
+
+      .layer-rename-input {
+        flex: 1; min-width: 0; font: inherit; color: inherit;
+        background: #111; border: 1px solid #2fa3ff; border-radius: 3px; padding: 1px 4px;
+      }
+
       /* Map area: map on top, (optional) section-profile pane tiled
          across the bottom, full width. Was side-by-side (map | profile)
          originally — flipped 2026-08-27 per Cameron, who confirmed he
