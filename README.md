@@ -1082,9 +1082,14 @@ load without error after the rename/deletions.
 
 ## Open items — need Cameron
 
-1. **Repo destination** — currently local-only at
-   `C:\Users\camer\K2-Power-Station-3D`, not pushed anywhere, per
-   Cameron's instruction to push everything at once later.
+1. ~~**Repo destination**~~ — **Done (2026-08-31).** Pushed to
+   `https://github.com/ProgressiveSpatial01/K2-power-station-3d` (private
+   repo — real client/site details are in the code and commit history
+   even though real survey data itself stays gitignored either way).
+   Verified the push landed completely: remote `HEAD` matches local
+   exactly, all 45 commits present. Deployment (so people without GitHub
+   accounts can use the actual app) is a separate next step — see "Open
+   items" below.
 2. **A real drone DSM/DTM**, whenever a K2 flight happens — will replace
    the current flat satellite-imagery ground plane (`ground-imagery.js`)
    as the 3D scene's default per the swap-point design in `terrain.js`
@@ -1146,3 +1151,14 @@ load without error after the rename/deletions.
     and for design linework (extruded/drawn similarly to services) would
     let the carry-over cover everything the 2D page can load — worth
     doing if the 3D scene becomes more than a deprioritised POC again.
+13. **Deployment** — the repo is pushed (private), but not deployed
+    anywhere yet. Cameron's stated real need is people without GitHub
+    accounts being able to open and use the app directly (not browse the
+    code), so the plan is a separate hosted deployment (Netlify/Vercel/
+    Cloudflare Pages all support this: connect to the private GitHub
+    repo, build with `npm run build` — now correctly outputs both
+    `index.html` and `3d.html`, see the pre-deployment `vite.config.js`
+    fix above — set `VITE_MAPBOX_TOKEN` as a build-time environment
+    variable there instead of `.env.local`, serve `dist/`), giving a
+    plain URL anyone can open. Not yet done — next step once Cameron
+    picks a host.
