@@ -1162,3 +1162,21 @@ load without error after the rename/deletions.
     variable there instead of `.env.local`, serve `dist/`), giving a
     plain URL anyone can open. Not yet done — next step once Cameron
     picks a host.
+
+    **Known limit of deploying as-is (confirmed 2026-08-31)**: uploaded
+    design/services/surface data lives only in the browser that uploaded
+    it (in-memory on the 2D page, and in that same browser's own
+    IndexedDB for the 2D→3D carry-over — see that section above) — it is
+    NOT shared between different people or devices. Cameron confirmed
+    the intended model is "one custodian uploads (him), everyone else
+    just views/interrogates, no one else can upload" — real shared
+    storage with enforced write permissions needs at least a minimal
+    backend, which K2 doesn't have. **Decided (2026-08-31) to build that
+    in the separate `progressive-spatial-platform` repo instead**
+    (which already plans per-site client access / read-only share links
+    as its own phase), not by adding a backend to K2. Practical effect: a
+    deployed K2, for
+    now, works as a single-operator tool — whoever's browser it's
+    running in sees only what THAT browser has uploaded, refreshed or
+    not; it does not yet do "I upload once, anyone with the link sees
+    it."
