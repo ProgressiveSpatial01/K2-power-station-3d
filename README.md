@@ -979,6 +979,16 @@ Both surface-driven modes report the same Δheight/2D/3D numbers the other modes
 
 **Verified**: rendered a synthetic chart with two real-shaped surfaces (a straight 8.0→9.0m chord and a straight 8.5→10.5m chord over the same 0–200m range) and confirmed, via real `mousemove` dispatches: (1) picking each surface from the dropdown in Surface↔Pipe mode changes the reported height (8.5 vs 9.5 at the midpoint) while everything else stays consistent; (2) switching to Surface↔Surface mode correctly reveals the second dropdown, defaults it to the other surface, and at the same midpoint correctly reports **Δheight 1.000 m, 2D 0.000 m, 3D 1.000 m** between them — exact expected values, not approximations. Also confirmed the "doesn't cover this point" fallback message correctly names whichever specific surface (A or B) is the one missing coverage at the cursor, tested with a surface that only partially covers the line.
 
+### Pre-deployment fix: `3d.html` was missing entirely from production builds (`vite.config.js`) (2026-08-31)
+
+Getting ready to actually push this repo and deploy it (Cameron: "can we look at pushing to git hub" → clarified the real need is people without GitHub accounts using the deployed app, not browsing code — so it needs a real production build, not just `npm run dev`). No `vite.config.js` existed at all — Vite's default `vite build` only bundles the root `index.html` as its entry point. This app has had two real pages since the very start (`index.html` the 2D map, `3d.html` the Three.js scene, cross-linked via "3D View →" / "← 2D Map") — completely invisible during `npm run dev`, since Vite's dev server serves any file by path whether it's a configured build entry or not.
+
+**Confirmed for real, not just reasoned about**: ran an actual `npm run build` before writing any config — `dist/` came out with only `index.html`; `3d.html` was entirely absent. The "3D View" link would have 404'd the instant this was deployed anywhere.
+
+**Fix**: added `vite.config.js` with `build.rollupOptions.input` listing both `index.html` and `3d.html` as entry points (using `import.meta.url`-derived `__dirname`, since this package is `"type": "module"` — Node ESM has no `__dirname` global, unlike CommonJS).
+
+**Verified**: rebuilt from a clean `dist/` — both `dist/index.html` and `dist/3d.html` now present. Served the real production build (`npm run preview`, not the dev server) and loaded both pages: the 3D page reached "Ready" with a clean console (CRS round-trip check passed, ground-imagery loaded, IFC loader set up, zero errors), the 2D page loaded cleanly too, and its "3D View →" link correctly resolves to `/3d.html`, which is now a real page in the build rather than a dev-server-only convenience.
+
 ### Terrain (`src/terrain.js`) — Mapbox Terrain-RGB REMOVED 2026-08-26, imagery kept
 
 **Cameron: "the mapbox terrain should be removed, it doesn't really do
