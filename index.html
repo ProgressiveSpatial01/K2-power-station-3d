@@ -48,6 +48,11 @@
       }
       .panel-section label.file-label { display: block; font-size: 11px; color: #aaa; margin-top: 8px; }
       .panel-section input[type="file"] { margin-top: 3px; display: block; font-size: 11px; width: 100%; color: #ccc; }
+      .panel-section input[type="text"].subgroup-input {
+        margin-top: 3px; display: block; font-size: 11px; width: 100%; box-sizing: border-box;
+        background: #17181a; border: 1px solid #3a3d42; border-radius: 4px; color: #ddd; padding: 4px 6px;
+      }
+      .panel-section input[type="text"].subgroup-input::placeholder { color: #666; }
 
       .layer-group { margin-bottom: 2px; }
       .layer-group-header {
@@ -175,6 +180,13 @@
             <h2>Add Data</h2>
             <label class="file-label" for="design-input">Design (.ifc / .12da / .12daz)</label>
             <input id="design-input" type="file" accept=".ifc,.12da,.12daz" />
+            <input
+              id="design-subgroup"
+              type="text"
+              class="subgroup-input"
+              placeholder="Subgroup (optional, e.g. &quot;Structural&quot;)"
+              title="Applies to the next Design file you choose above — IFC designs and surfaces (design linework groups itself by its own 12d model paths already)."
+            />
             <label class="file-label" for="services-input">12d services (.12da / .12daz)</label>
             <input id="services-input" type="file" accept=".12da,.12daz" />
           </section>

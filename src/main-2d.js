@@ -202,6 +202,51 @@ function addCustomLayers() {
   designSurfaceController.reAddIfPresent();
 }
 
+/**
+ * Lazily creates (and caches, so repeated uploads into the same subgroup
+ * name reuse it rather than duplicating) a named subgroup inside `group`
+ * — or just returns `group` itself if no name was given. Added
+ * 2026-08-31, per Cameron: "would be great to upload them and put them
+ * into subgroups from the import phase." Shared by the IFC and design-
+ * surface controllers below — the two that were flat lists (one row per
+ * upload, no structure) before this; services/design-linework already
+ * organise themselves from each 12d record's own `model` path, so
+ * manual subgrouping wasn't added there (flag if that's wanted too).
+ *
+ * `onGroupDelete(name)` is REQUIRED, not cosmetic: `layer-tree.js`'s own
+ * group delete button only removes the DOM/sidebar bookkeeping — it has
+ * no idea a controller's map data/features exist at all. Without this,
+ * deleting a subgroup would hide every design/surface inside it from the
+ * sidebar while leaving their actual features still rendered on the map
+ * with no way to toggle or remove them — a real orphaned-data bug, not
+ * just a cosmetic one. Each controller supplies its own callback that
+ * walks its OWN tracked membership for that subgroup name and calls its
+ * real per-item removal function (`removeDesign`/`removeSurface`) for
+ * each — reusing the exact same cleanup a normal row-level delete uses.
+ *
+ * @param {ReturnType<typeof createLayerGroup>} group
+ * @param {Map<string, ReturnType<typeof createLayerGroup>>} cache
+ * @param {string|null|undefined} name
+ * @param {(name: string) => void} onGroupDelete
+ */
+function resolveTargetGroup(group, cache, name, onGroupDelete) {
+  const trimmed = (name ?? "").trim();
+  if (!trimmed) return group;
+  if (!cache.has(trimmed)) {
+    cache.set(
+      trimmed,
+      group.addSubgroup({
+        label: trimmed,
+        onDelete: () => {
+          onGroupDelete(trimmed);
+          cache.delete(trimmed);
+        },
+      })
+    );
+  }
+  return cache.get(trimmed);
+}
+
 const POINT_SOURCE_ID = "ifc-design-point";
 const POINT_LAYER_ID = "ifc-design-point-layer";
 const FOOTPRINT_SOURCE_ID = "ifc-design-footprint";
@@ -228,6 +273,8 @@ function createIfcFeatureController({ group }) {
   const footprintFeatures = new Map(); // ifcId -> footprint feature (absent if geometry load failed)
   const checkedIds = new Set();
   const checkboxes = new Map();
+  const subgroups = new Map(); // subgroup name -> layer-tree group, see resolveTargetGroup()
+  const subgroupMembers = new Map(); // subgroup name -> Set<ifcId>, so deleting a subgroup can remove its real designs too
 
   function applyFilter() {
     const ids = [...checkedIds];
@@ -333,8 +380,9 @@ function createIfcFeatureController({ group }) {
      * @param {GeoJSON.Feature} pointFeature - the project base point (always available)
      * @param {GeoJSON.Feature | null} footprintFeature - the bounding-box outline,
      *   null if it couldn't be computed (e.g. geometry load failed) — point-only in that case
+     * @param {string} [subgroupName] - per-import manual organisation, see resolveTargetGroup()
      */
-    setDesign(ifcId, pointFeature, footprintFeature) {
+    setDesign(ifcId, pointFeature, footprintFeature, subgroupName) {
       pointFeature.properties.ifcId = ifcId;
       if (footprintFeature) footprintFeature.properties.ifcId = ifcId;
 
@@ -345,7 +393,11 @@ function createIfcFeatureController({ group }) {
 
       if (isNew) {
         checkedIds.add(ifcId);
-        const input = group.addRow({
+        const targetGroup = resolveTargetGroup(group, subgroups, subgroupName, (name) => {
+          for (const memberId of subgroupMembers.get(name) ?? []) removeDesign(memberId);
+          subgroupMembers.delete(name);
+        });
+        const input = targetGroup.addRow({
           label: ifcId,
           color: "#ffb454",
           checked: true,
@@ -357,6 +409,12 @@ function createIfcFeatureController({ group }) {
           onDelete: () => removeDesign(ifcId),
         });
         checkboxes.set(ifcId, input);
+
+        const trimmed = (subgroupName ?? "").trim();
+        if (trimmed) {
+          if (!subgroupMembers.has(trimmed)) subgroupMembers.set(trimmed, new Set());
+          subgroupMembers.get(trimmed).add(ifcId);
+        }
       }
     },
     /** Re-create the source/layers after a base-style switch wiped them. No-op if nothing's loaded yet. */
@@ -677,6 +735,8 @@ function createSurfaceFeatureController({ sourceId, fillLayerId, lineLayerId, gr
   const knownSurfaceIds = new Set(); // Sets preserve insertion order — relied on by the compare control's "default to the two most recent" logic
   const checkedSurfaces = new Set();
   const checkboxes = new Map(); // surfaceId -> its sidebar row's <input>, so setSurfaceVisible() can drive the same checkbox the compare control's dropdowns pick from
+  const subgroups = new Map(); // subgroup name -> layer-tree group, see resolveTargetGroup()
+  const subgroupMembers = new Map(); // subgroup name -> Set<surfaceId>, so deleting a subgroup can remove its real surfaces too
 
   function applyFilter() {
     map.setFilter(fillLayerId, ["in", ["get", "surfaceId"], ["literal", [...checkedSurfaces]]]);
@@ -707,15 +767,20 @@ function createSurfaceFeatureController({ sourceId, fillLayerId, lineLayerId, gr
     onSurfacesChanged?.([...knownSurfaceIds]);
   }
 
-  function addSidebarRowsIfNeeded(newFeatures) {
+  function addSidebarRowsIfNeeded(newFeatures, subgroupName) {
     let added = false;
+    const targetGroup = resolveTargetGroup(group, subgroups, subgroupName, (name) => {
+      for (const memberId of subgroupMembers.get(name) ?? []) removeSurface(memberId);
+      subgroupMembers.delete(name);
+    });
+    const trimmed = (subgroupName ?? "").trim();
     for (const f of newFeatures) {
       const id = f.properties.surfaceId;
       if (knownSurfaceIds.has(id)) continue;
       knownSurfaceIds.add(id);
       checkedSurfaces.add(id);
       added = true;
-      const input = group.addRow({
+      const input = targetGroup.addRow({
         label: id,
         color: f.properties.colour,
         checked: true,
@@ -727,6 +792,10 @@ function createSurfaceFeatureController({ sourceId, fillLayerId, lineLayerId, gr
         onDelete: () => removeSurface(id),
       });
       checkboxes.set(id, input);
+      if (trimmed) {
+        if (!subgroupMembers.has(trimmed)) subgroupMembers.set(trimmed, new Set());
+        subgroupMembers.get(trimmed).add(id);
+      }
     }
     if (added) onSurfacesChanged?.([...knownSurfaceIds]);
   }
@@ -752,7 +821,8 @@ function createSurfaceFeatureController({ sourceId, fillLayerId, lineLayerId, gr
   }
 
   return {
-    addFeatures(newFeatures) {
+    /** @param {string} [subgroupName] - per-import manual organisation, see resolveTargetGroup() */
+    addFeatures(newFeatures, subgroupName) {
       // NOT allFeatures.push(...newFeatures) — see createLineFeatureController's
       // identical fix above. A real drone-flight-density surface (thousands
       // of triangle features per upload) can exceed the spread-argument
@@ -767,7 +837,7 @@ function createSurfaceFeatureController({ sourceId, fillLayerId, lineLayerId, gr
         createSourceAndLayers(data);
       }
       applyFilter();
-      addSidebarRowsIfNeeded(newFeatures);
+      addSidebarRowsIfNeeded(newFeatures, subgroupName);
     },
     reAddIfPresent() {
       if (allFeatures.length === 0 || map.getSource(sourceId)) return;
@@ -913,20 +983,26 @@ function buildSurfaceFeaturesFrom12d(surfaces, sourceFileName) {
  */
 function wireDesignInput() {
   const fileInput = document.getElementById("design-input");
+  const subgroupInput = document.getElementById("design-subgroup");
   fileInput.addEventListener("change", async (e) => {
     const file = e.target.files?.[0];
     if (!file) return;
+    // Read once per upload, not live — the file the subgroup name applies
+    // to has already been picked by the time this fires; changing the
+    // text field afterwards shouldn't retroactively move anything.
+    const subgroupName = subgroupInput.value;
     if (/\.ifc$/i.test(file.name)) {
-      await handleIfcDesignFile(file);
+      await handleIfcDesignFile(file, subgroupName);
     } else if (/\.12daz?$/i.test(file.name)) {
-      await handleDesign12dFile(file);
+      await handleDesign12dFile(file, subgroupName);
     } else {
       setStatus(`Unrecognised design file type: ${file.name} — expected .ifc, .12da, or .12daz.`);
     }
   });
 }
 
-async function handleIfcDesignFile(file) {
+/** @param {string} [subgroupName] - per Cameron: "upload them and put them into subgroups from the import phase" — applies to IFC designs; see handleDesign12dFile() for surfaces (design linework groups itself by model path already, so this is ignored for that part). */
+async function handleIfcDesignFile(file, subgroupName) {
   setStatus(`Reading ${file.name}…`);
   let pointFeature; // set by whichever branch below actually places this design; read again once the footprint's computed
   try {
@@ -966,7 +1042,7 @@ async function handleIfcDesignFile(file) {
           },
         };
         pointFeature = feature;
-        ifcController.setDesign(file.name, feature, null);
+        ifcController.setDesign(file.name, feature, null, subgroupName);
         map.flyTo({ center: [lon, lat], zoom: 18 });
         setStatus(
           `Placed ${file.name} at MGA50 E${georef.eastingOffset} N${georef.northingOffset} ` +
@@ -1043,7 +1119,7 @@ async function handleIfcDesignFile(file) {
             },
           };
           pointFeature = feature;
-          ifcController.setDesign(file.name, feature, null);
+          ifcController.setDesign(file.name, feature, null, subgroupName);
           map.flyTo({ center: [lon, lat], zoom: 18 });
         }
 
@@ -1056,7 +1132,7 @@ async function handleIfcDesignFile(file) {
           geometry: { type: "Polygon", coordinates: [ring] },
           properties: { name: file.name },
         };
-        ifcController.setDesign(file.name, pointFeature, footprintFeature);
+        ifcController.setDesign(file.name, pointFeature, footprintFeature, subgroupName);
 
         setStatus(
           `Placed ${file.name} at MGA50 E${localOrigin[0].toFixed(3)} N${localOrigin[1].toFixed(3)} ` +
@@ -1095,7 +1171,8 @@ async function handleIfcDesignFile(file) {
  * it's some other 12d export entirely) neither — each kind is added
  * independently, only if present.
  */
-async function handleDesign12dFile(file) {
+/** @param {string} [subgroupName] - surfaces only (see handleIfcDesignFile()'s docstring for why linework doesn't use this) */
+async function handleDesign12dFile(file, subgroupName) {
   setStatus(`Loading ${file.name}…`);
   try {
     const records = await loadTwelveDaFile(file);
@@ -1139,7 +1216,7 @@ async function handleDesign12dFile(file) {
             "scaffold (nulling===1) — see twelve-d.js full_tin notes. Unconfirmed with Cameron."
         );
       }
-      designSurfaceController.addFeatures(features);
+      designSurfaceController.addFeatures(features, subgroupName);
       allNewFeatures = allNewFeatures.concat(features);
       messages.push(
         `${records.surfaces.length} surface(s) (${features.length} triangle(s) shown, ` +
