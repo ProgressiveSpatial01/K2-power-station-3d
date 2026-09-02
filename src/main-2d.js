@@ -82,6 +82,22 @@ const map = new mapboxgl.Map({
 
 map.addControl(new mapboxgl.NavigationControl(), "bottom-right");
 
+// "Find my location" (2026-09-02, per Cameron: people viewing on phone/
+// tablet need to be able to locate themselves via GPS). Mapbox's own
+// GeolocateControl handles the permission prompt, the blue dot +
+// accuracy circle, and (via showUserHeading) a heading arrow when the
+// device provides one — all standard mobile behaviour, no reason to
+// hand-roll it. trackUserLocation keeps the dot updating live and
+// re-centres the map on first click rather than a single one-off fix.
+map.addControl(
+  new mapboxgl.GeolocateControl({
+    positionOptions: { enableHighAccuracy: true },
+    trackUserLocation: true,
+    showUserHeading: true,
+  }),
+  "bottom-right"
+);
+
 // Whether a measure/section draw tool is currently active — checked by
 // every clickable layer's popup handler below (IFC point/footprint,
 // services/design-linework, design surfaces) so they can get out of the
