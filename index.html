@@ -185,14 +185,66 @@
         padding: 8px 12px; font-size: 12px; color: #ffb454; display: none;
       }
       #measure-result.active { display: block; }
+
+      /* Collapsible sidebar for mobile/tablet (2026-09-02, per Cameron:
+         "need the sidebar to be collapsable to be viewed a little nicer
+         on mobile") — desktop is untouched (sidebar stays permanently
+         visible, in-flow, exactly as before); below 768px it becomes an
+         off-canvas drawer: closed by default (so the map gets the full
+         screen, not squeezed down to a sliver next to a fixed 300px
+         panel), opened via a floating hamburger button, dismissed by
+         its own header ✕, the backdrop, or the hamburger again. */
+      #sidebar-toggle {
+        display: none; /* shown only under the mobile media query below */
+        position: fixed; top: 12px; left: 12px; z-index: 30;
+        width: 40px; height: 40px; border-radius: 8px;
+        background: rgba(23,24,26,0.92); border: 1px solid #333; color: #fff;
+        font-size: 18px; align-items: center; justify-content: center; cursor: pointer;
+      }
+      #sidebar-backdrop {
+        display: none;
+        position: fixed; inset: 0; background: rgba(0,0,0,0.45); z-index: 19;
+      }
+      #sidebar-close { display: none; } /* only relevant once the drawer can open at all */
+
+      @media (max-width: 768px) {
+        #sidebar-toggle { display: flex; }
+        /* Hamburger hides once the drawer's open — the header ✕ takes over,
+           rather than two overlapping controls in the same corner. */
+        #layout.sidebar-open #sidebar-toggle { display: none; }
+
+        #sidebar {
+          position: fixed; inset: 0 auto 0 0; z-index: 20;
+          width: 84vw; max-width: 320px;
+          transform: translateX(-100%);
+          transition: transform 0.22s ease;
+          box-shadow: 2px 0 16px rgba(0,0,0,0.5);
+        }
+        #layout.sidebar-open #sidebar { transform: translateX(0); }
+        #layout.sidebar-open #sidebar-backdrop { display: block; }
+
+        #sidebar-close {
+          display: inline-flex; align-items: center; justify-content: center;
+          background: none; border: none; color: #ccc; font-size: 16px;
+          cursor: pointer; padding: 4px 8px; margin-left: 6px;
+        }
+        #sidebar-close:hover { color: #fff; }
+
+        /* The floating map toolbar would otherwise sit right under the
+           hamburger button — nudge it down out of the way. */
+        #map-toolbar { top: 62px; }
+      }
     </style>
   </head>
   <body>
     <div id="layout">
+      <button id="sidebar-toggle" type="button" aria-label="Open menu">☰</button>
+      <div id="sidebar-backdrop"></div>
       <aside id="sidebar">
         <div id="sidebar-header">
           <h1>K2 Site Map</h1>
           <a id="view-toggle" href="/3d.html">3D View →</a>
+          <button id="sidebar-close" type="button" aria-label="Close menu">✕</button>
         </div>
         <div id="status-bar">Loading map…</div>
         <div id="sidebar-scroll">

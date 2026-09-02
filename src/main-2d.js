@@ -169,6 +169,29 @@ const servicesGroup = createLayerGroup(layerTreeEl, {
 });
 
 wireBaseStyleGroup();
+wireSidebarToggle();
+
+/**
+ * Collapsible mobile sidebar (2026-09-02) — pure UI, no map dependency,
+ * so wired immediately rather than waiting on map.on("load") like the
+ * data-dependent wire*() calls below. Desktop is untouched by this (the
+ * toggle/backdrop only render under index.html's max-width:768px media
+ * query); on mobile it opens/closes the off-canvas drawer by toggling
+ * one class on #layout, which both index.html's CSS and this function
+ * key off.
+ */
+function wireSidebarToggle() {
+  const layout = document.getElementById("layout");
+  const openBtn = document.getElementById("sidebar-toggle");
+  const closeBtn = document.getElementById("sidebar-close");
+  const backdrop = document.getElementById("sidebar-backdrop");
+
+  const setOpen = (open) => layout.classList.toggle("sidebar-open", open);
+
+  openBtn.addEventListener("click", () => setOpen(true));
+  closeBtn.addEventListener("click", () => setOpen(false));
+  backdrop.addEventListener("click", () => setOpen(false));
+}
 
 map.on("load", () => {
   setStatus("Ready — choose a design (.ifc/.12da/.12daz) and/or a .12da/.12daz services file.");
