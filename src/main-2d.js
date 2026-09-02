@@ -642,10 +642,31 @@ const designLineworkController = createLineFeatureController({
 /**
  * Parse 12d records into map-ready line features — shared by both
  * services and design linework (see createLineFeatureController()
- * above for why they're structurally identical). Splits on gaps
- * (twelve-d.js splitOnGaps() — see its header for why a flat distance
- * threshold doesn't work) and filters out anything left with <2 points
- * (point/symbol data, or an isolated point after splitting).
+ * above for why they're structurally identical).
+ *
+ * Gap-splitting (twelve-d.js splitOnGaps()) is applied ONLY for
+ * "services" — filters out anything left with <2 points (point/symbol
+ * data, or an isolated point after splitting).
+ *
+ * *** design-linework deliberately skips splitOnGaps() (2026-09-02) ***
+ * splitOnGaps() exists to fix a real AS-BUILT SURVEY problem: a services
+ * export can bundle several physically separate real-world features
+ * (e.g. 30 distinct manhole rims) into one `data_3d` array with no
+ * marker between them, so a big jump really does mean "new feature" —
+ * see its own header. DESIGN linework doesn't have that problem: each
+ * `string` record already represents one deliberately-designed feature
+ * (one pipe run), not an accidental concatenation of unrelated ones.
+ * But real designed pipe routes routinely mix short elbow-jogs near
+ * fittings (0-7m) with genuinely long straight main runs (tens of
+ * metres) — exactly the "big jump" signature splitOnGaps looks for.
+ * Confirmed against a real sample: Cameron's "Design Fire Water.12daz"
+ * (one continuous, correctly-connected 20-vertex pipe run, verified
+ * against 12d's own plan view) was being cut into 3 disconnected
+ * fragments at its two genuine long straight sections (96.7m and
+ * 43.2m) — reported by Cameron as "gaps where there shouldn't be."
+ * Trusting the record's own connectivity as 12d exported it (no
+ * splitting at all) fixes this without reintroducing the manhole
+ * problem, since that problem is specific to services survey exports.
  *
  * Keeps each point's real elevation as a 3rd GeoJSON coordinate value
  * ([lon, lat, elevationAhd], added 2026-08-26) — Mapbox's 2D line layer
@@ -653,14 +674,15 @@ const designLineworkController = createLineFeatureController({
  * show real pipe/linework depth rather than just terrain height. See
  * wireMapToolbar()'s onSectionLine for where it's used.
  *
- * @param {string} layerKind - tags each feature for the section-view
- *   legend/labelling (section-intersect.js) — "services" or
- *   "design-linework", not used for anything else here.
+ * @param {string} layerKind - "services" (gap-split) or
+ *   "design-linework" (not split) — also tags each feature for the
+ *   section-view legend/labelling (section-intersect.js).
  */
 function buildLineFeaturesFrom12d(records, layerKind) {
   let skippedShort = 0;
   const features = records.flatMap((r) => {
-    const segments = splitOnGaps(r.centrelinePoints);
+    const segments =
+      layerKind === "services" ? splitOnGaps(r.centrelinePoints) : [r.centrelinePoints];
     // Same per-record values reused across however many segments this one
     // record split into — hoisted out of the per-segment map (2026-08-26,
     // same fix as buildSurfaceFeaturesFrom12d(), see its comment for why:
