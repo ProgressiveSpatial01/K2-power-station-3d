@@ -39,6 +39,14 @@ import { renderProfileChart } from "./profile-chart.js";
 import { computeSectionCrossings, lineLengthM } from "./section-intersect.js";
 import { createSurfaceCompareControl } from "./surface-compare.js";
 import { stashDesignFile } from "./shared-design-store.js";
+import {
+  getCustodianSecret,
+  setCustodianSecret,
+  listSharedFiles,
+  fetchSharedFile,
+  uploadSharedFile,
+  deleteSharedFile,
+} from "./shared-remote-store.js";
 
 const statusEl = document.getElementById("status-bar");
 function setStatus(msg) {
@@ -152,6 +160,8 @@ map.on("load", () => {
   wireDesignInput();
   wireServicesInput();
   wireMapToolbar();
+  wireCustodianMode();
+  loadSharedFiles();
 });
 
 // Base style switches destroy all custom sources/layers; re-add them
@@ -971,6 +981,169 @@ function buildSurfaceFeaturesFrom12d(surfaces, sourceFileName) {
   return { features, excludedScaffold };
 }
 
+// --- Custodian mode / shared storage (2026-08-31) -----------------------
+//
+// Cameron: "people wont have files to load themselves, i will be the
+// sole custodian of the import data, so i imagine that changes things."
+// Realised mid-deployment-planning that per-browser-only storage (the
+// IndexedDB carry-over above) means every OTHER visitor to a deployed K2
+// sees an empty map — only useful to Cameron himself. This is the real
+// fix: api/shared-*.js + shared-remote-store.js provide one shared,
+// backend-held store. Everyone's browser auto-loads whatever's in it on
+// startup (see loadSharedFiles() below); only someone who knows the
+// CUSTODIAN_SECRET (never shipped to the browser — checked server-side
+// on every write) can add or remove from it.
+//
+// Deliberately a SEPARATE, simple "Shared Data" panel rather than wiring
+// every existing local delete button (per-model-leaf, per-surface,
+// per-IFC-design, whole-group) to also delete from shared storage — a
+// single 12d upload can produce many local rows (one per model path),
+// with no clean 1:1 mapping back to "the one file that produced these"
+// for a leaf-level delete. The local layer tree still controls what's
+// checked/visible/renamed in THIS session, same as always; the Shared
+// Data panel is specifically for "what will load for the NEXT visitor,"
+// managed at the level that actually maps cleanly: one shared upload.
+
+function isCustodianUnlocked() {
+  return !!getCustodianSecret();
+}
+
+function wireCustodianMode() {
+  const toggleBtn = document.getElementById("custodian-toggle");
+  const addDataSection = document.getElementById("add-data-section");
+
+  function applyUnlockedState() {
+    const unlocked = isCustodianUnlocked();
+    addDataSection.style.display = unlocked ? "block" : "none";
+    toggleBtn.textContent = unlocked ? "🔓 Custodian mode (unlocked)" : "🔒 Unlock custodian mode";
+    toggleBtn.classList.toggle("unlocked", unlocked);
+    renderSharedFilesList(lastKnownSharedFiles); // delete buttons only show once unlocked
+  }
+
+  toggleBtn.addEventListener("click", () => {
+    if (isCustodianUnlocked()) {
+      if (confirm("Lock custodian mode again? You can re-enter the key later to unlock it.")) {
+        setCustodianSecret(null);
+        applyUnlockedState();
+      }
+      return;
+    }
+    const entered = prompt("Enter the custodian key (set as CUSTODIAN_SECRET on the server):");
+    if (entered) {
+      setCustodianSecret(entered);
+      applyUnlockedState();
+    }
+  });
+
+  applyUnlockedState();
+}
+
+// Kept so re-rendering the Shared Data list (e.g. right after unlocking,
+// before any new fetch) doesn't need to re-fetch from the server.
+let lastKnownSharedFiles = [];
+
+function renderSharedFilesList(entries) {
+  lastKnownSharedFiles = entries;
+  const container = document.getElementById("shared-files-list");
+  if (entries.length === 0) {
+    container.innerHTML = `<p class="shared-files-empty">Nothing shared yet.</p>`;
+    return;
+  }
+  const unlocked = isCustodianUnlocked();
+  container.innerHTML = "";
+  for (const entry of entries) {
+    const row = document.createElement("div");
+    row.className = "shared-file-row";
+    const nameEl = document.createElement("span");
+    nameEl.className = "shared-file-name";
+    nameEl.textContent = entry.name;
+    nameEl.title = entry.name;
+    const metaEl = document.createElement("span");
+    metaEl.className = "shared-file-meta";
+    metaEl.textContent = entry.slot + (entry.subgroupName ? ` · ${entry.subgroupName}` : "");
+    row.append(nameEl, metaEl);
+    if (unlocked) {
+      const deleteBtn = document.createElement("button");
+      deleteBtn.type = "button";
+      deleteBtn.className = "shared-file-delete";
+      deleteBtn.textContent = "🗑";
+      deleteBtn.title = "Remove from shared storage — stops loading for future visitors (does not affect what's currently on your own screen)";
+      deleteBtn.addEventListener("click", async () => {
+        deleteBtn.disabled = true;
+        try {
+          await deleteSharedFile(entry.id);
+          renderSharedFilesList(lastKnownSharedFiles.filter((f) => f.id !== entry.id));
+        } catch (err) {
+          console.error(err);
+          alert(`Failed to remove "${entry.name}" from shared storage: ${err.message}`);
+          deleteBtn.disabled = false;
+        }
+      });
+      row.appendChild(deleteBtn);
+    }
+    container.appendChild(row);
+  }
+}
+
+/**
+ * Fetches the current shared-file manifest and replays every entry
+ * through the SAME handlers a live upload uses (handleIfcDesignFile /
+ * handleDesign12dFile / the services path) — so every visitor's map
+ * populates automatically with whatever the custodian has shared, no
+ * upload of their own needed or offered.
+ */
+async function loadSharedFiles() {
+  let entries;
+  try {
+    entries = await listSharedFiles();
+  } catch (err) {
+    console.error("[K2-2D] Failed to load shared files:", err);
+    renderSharedFilesList([]);
+    return;
+  }
+  renderSharedFilesList(entries);
+  if (entries.length === 0) return;
+
+  setStatus(`Loading ${entries.length} shared file(s)…`);
+  for (const entry of entries) {
+    try {
+      const file = await fetchSharedFile(entry);
+      if (entry.slot === "design") {
+        if (/\.ifc$/i.test(file.name)) {
+          await handleIfcDesignFile(file, entry.subgroupName, { skipSharing: true });
+        } else {
+          await handleDesign12dFile(file, entry.subgroupName, { skipSharing: true });
+        }
+      } else if (entry.slot === "services") {
+        await handleServicesFile(file, { skipSharing: true });
+      }
+    } catch (err) {
+      console.error(`[K2-2D] Failed to load shared file "${entry.name}":`, err);
+    }
+  }
+}
+
+/**
+ * Pushes a just-successfully-loaded file to shared storage, if custodian
+ * mode is unlocked — silently skipped otherwise (so a regular visitor
+ * who somehow reaches the Add Data section, e.g. an already-unlocked
+ * browser someone forgot to lock, doesn't accidentally corrupt anything:
+ * the server rejects it anyway without the real secret, this just avoids
+ * a pointless request). Never throws — a failed share shouldn't undo the
+ * successful LOCAL load the user is already looking at.
+ */
+async function shareIfCustodian(slot, file, subgroupName) {
+  if (!isCustodianUnlocked()) return;
+  try {
+    await uploadSharedFile({ slot, subgroupName, file });
+    const entries = await listSharedFiles();
+    renderSharedFilesList(entries);
+  } catch (err) {
+    console.error("[K2-2D] Failed to share to backend:", err);
+    setStatus(`Loaded locally, but failed to share "${file.name}" for other visitors: ${err.message}`);
+  }
+}
+
 /**
  * The "Design" upload slot accepts more than one format — per Cameron
  * (2026-08-26): "the design upload probably needs to be able to support
@@ -1001,8 +1174,11 @@ function wireDesignInput() {
   });
 }
 
-/** @param {string} [subgroupName] - per Cameron: "upload them and put them into subgroups from the import phase" — applies to IFC designs; see handleDesign12dFile() for surfaces (design linework groups itself by model path already, so this is ignored for that part). */
-async function handleIfcDesignFile(file, subgroupName) {
+/**
+ * @param {string} [subgroupName] - per Cameron: "upload them and put them into subgroups from the import phase" — applies to IFC designs; see handleDesign12dFile() for surfaces (design linework groups itself by model path already, so this is ignored for that part).
+ * @param {{ skipSharing?: boolean }} [opts] - `skipSharing: true` when replaying a file we just DOWNLOADED from shared storage (loadSharedFiles()) — otherwise it'd immediately try to re-upload the same file back to shared storage.
+ */
+async function handleIfcDesignFile(file, subgroupName, opts = {}) {
   setStatus(`Reading ${file.name}…`);
   let pointFeature; // set by whichever branch below actually places this design; read again once the footprint's computed
   try {
@@ -1141,6 +1317,7 @@ async function handleIfcDesignFile(file, subgroupName) {
             "for anything rotated or non-rectangular."
         );
         stashDesignFile("design", file); // carries over to the 3D view — see shared-design-store.js
+        if (!opts.skipSharing) await shareIfCustodian("design", file, subgroupName);
       } catch (err) {
         console.error("[K2-2D] Geometry load failed:", err);
         if (georef) {
@@ -1171,8 +1348,11 @@ async function handleIfcDesignFile(file, subgroupName) {
  * it's some other 12d export entirely) neither — each kind is added
  * independently, only if present.
  */
-/** @param {string} [subgroupName] - surfaces only (see handleIfcDesignFile()'s docstring for why linework doesn't use this) */
-async function handleDesign12dFile(file, subgroupName) {
+/**
+ * @param {string} [subgroupName] - surfaces only (see handleIfcDesignFile()'s docstring for why linework doesn't use this)
+ * @param {{ skipSharing?: boolean }} [opts] - see handleIfcDesignFile()'s docstring
+ */
+async function handleDesign12dFile(file, subgroupName, opts = {}) {
   setStatus(`Loading ${file.name}…`);
   try {
     const records = await loadTwelveDaFile(file);
@@ -1226,6 +1406,41 @@ async function handleDesign12dFile(file, subgroupName) {
 
     fitMapToFeatures(allNewFeatures);
     setStatus(`Loaded ${file.name}: ${messages.join(" and ")} on the map.`);
+    if (!opts.skipSharing) await shareIfCustodian("design", file, subgroupName);
+  } catch (err) {
+    console.error(err);
+    setStatus(`Failed to load ${file.name}: ${err.message}`);
+  }
+}
+
+/** @param {{ skipSharing?: boolean }} [opts] - see handleIfcDesignFile()'s docstring */
+async function handleServicesFile(file, opts = {}) {
+  setStatus(`Loading ${file.name}…`);
+  try {
+    const records = await loadTwelveDaFile(file);
+    console.log("[K2-2D] Parsed 12d records:", records);
+
+    // Some real exports include point/symbol features (data_2d, no
+    // data_3d — e.g. SDR survey pickups, symbol placements) alongside
+    // line strings, and some records bundle several physically
+    // separate features (e.g. multiple distinct manhole rim outlines)
+    // into one `data_3d` array with no marker between them — see
+    // buildLineFeaturesFrom12d() / twelve-d.js splitOnGaps() for how
+    // both are handled (found against a real 800-record weekly
+    // export; reported by Cameron as "pits seem to be joining up").
+    const { features, skippedShort } = buildLineFeaturesFrom12d(records, "services");
+    if (skippedShort > 0) {
+      console.warn(
+        `[K2-2D] Skipped ${skippedShort} segment(s) with <2 points (point/symbol data, or an ` +
+          "isolated single point left over after gap-splitting)."
+      );
+    }
+
+    servicesController.addFeatures(features);
+    fitMapToFeatures(features);
+    setStatus(`Loaded ${file.name}: ${records.length} service string(s) on the map.`);
+    stashDesignFile("services", file); // carries over to the 3D view — see shared-design-store.js
+    if (!opts.skipSharing) await shareIfCustodian("services", file, null);
   } catch (err) {
     console.error(err);
     setStatus(`Failed to load ${file.name}: ${err.message}`);
@@ -1237,35 +1452,7 @@ function wireServicesInput() {
   fileInput.addEventListener("change", async (e) => {
     const file = e.target.files?.[0];
     if (!file) return;
-    setStatus(`Loading ${file.name}…`);
-    try {
-      const records = await loadTwelveDaFile(file);
-      console.log("[K2-2D] Parsed 12d records:", records);
-
-      // Some real exports include point/symbol features (data_2d, no
-      // data_3d — e.g. SDR survey pickups, symbol placements) alongside
-      // line strings, and some records bundle several physically
-      // separate features (e.g. multiple distinct manhole rim outlines)
-      // into one `data_3d` array with no marker between them — see
-      // buildLineFeaturesFrom12d() / twelve-d.js splitOnGaps() for how
-      // both are handled (found against a real 800-record weekly
-      // export; reported by Cameron as "pits seem to be joining up").
-      const { features, skippedShort } = buildLineFeaturesFrom12d(records, "services");
-      if (skippedShort > 0) {
-        console.warn(
-          `[K2-2D] Skipped ${skippedShort} segment(s) with <2 points (point/symbol data, or an ` +
-            "isolated single point left over after gap-splitting)."
-        );
-      }
-
-      servicesController.addFeatures(features);
-      fitMapToFeatures(features);
-      setStatus(`Loaded ${file.name}: ${records.length} service string(s) on the map.`);
-      stashDesignFile("services", file); // carries over to the 3D view — see shared-design-store.js
-    } catch (err) {
-      console.error(err);
-      setStatus(`Failed to load ${file.name}: ${err.message}`);
-    }
+    await handleServicesFile(file);
   });
 }
 
