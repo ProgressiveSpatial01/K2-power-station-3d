@@ -706,63 +706,51 @@ const designLineworkController = createLineFeatureController({
     "Design linework (12d) — not a service.",
 });
 
-// *** Gap-splitting is keyed off the RECORD's own name, not layerKind
-// (2026-09-03, superseding the 2026-09-02 "design skips, services
-// doesn't" version below) ***
-//
-// That version was too coarse. Checked against a real 809-record
-// weekly services export ("260902 Service Upload.12daz") and found
-// BOTH failure modes present in the SAME file:
-//  - Genuine concatenated-feature records (the original bug this logic
-//    was built for) — "power mh", "comms manhole", "drain sidepit",
-//    "drain grate", "unknown manhole", "water mh": many small, roughly
-//    equal-sized point clusters (a real chamber's rim outline) linked
-//    by large jumps to the next, unrelated chamber. These NEED
-//    splitting, and still get it correctly split every time.
-//  - Genuine continuous pipe/cable runs wrongly fragmented — "POWER UG
-//    LV PIPE 50", "fuel ug line", "earth ug line": real service runs
-//    that (just like "Design Fire Water.12daz" before it) legitimately
-//    mix short local jogs with a couple of genuinely long straight
-//    sections, which splitOnGaps() misreads as a feature boundary.
-//    Reported by Cameron (screenshot, mobile) as visible gaps in what
-//    should be continuous lines.
-//
-// So "is this record safe to gap-split" isn't about which upload slot
-// it came through — it's about what KIND of feature the record itself
-// is. Cameron's own 12d naming convention turns out to draw this line
-// cleanly across all 809 records checked: anything read as a
-// point/chamber feature (manhole, pit, grate, etc.) is exactly the
-// concatenation-prone case; anything read as a run (pipe, line, cable,
-// duct) is a real, single, continuous alignment that should never be
-// cut on an internal distance heuristic. **This rests on Cameron's
-// naming convention actually holding in general — flagged, not yet
-// confirmed with him beyond this one file. If a differently-named
-// export shows the same fragmenting or joining-up symptom, that's the
-// first thing to check.**
-// No leading \b on "pit" — real names compound it ("sidepit"), unlike
-// every other keyword here which only ever appears as its own word.
-const POINT_CHAMBER_NAME_PATTERN = /\b(manhole|mh|grate|chamber|hydrant|valve|dome|dish|box|opening)\b|pit\b/i;
-
-/** @param {string|null} name - a 12d string record's own `name` field */
-function looksLikePointChamberFeature(name) {
-  return !!name && POINT_CHAMBER_NAME_PATTERN.test(name);
-}
-
+// *** REVERTED 2026-09-03 — back to the plain layerKind rule below ***
+// A same-day attempt keyed gap-splitting off the record's own NAME
+// (manhole/pit/grate = split, pipe/line = don't) instead of layerKind,
+// reasoning that "POWER UG LV PIPE 50"/"fuel ug line"/"earth ug line"
+// looked like genuine continuous runs being wrongly fragmented, the
+// same failure as "Design Fire Water.12daz". That was never actually
+// confirmed with Cameron the way the fire water case was — and it was
+// wrong: Cameron reported "fuel ug line" now drawing a long diagonal
+// line straight through buildings and open ground connecting unrelated
+// points — exactly the original "features joining up" bug, just
+// reintroduced for anything name-matched as a "line"/"pipe". Services
+// data (as-built survey capture) can and does reuse one generic name
+// across multiple real, physically separate features — a "line" or
+// "PIPE" name is NOT a reliable signal that a record is one true
+// continuous alignment, any more than "mh" reliably meant it wasn't.
+// Splitting protects against drawing a false connection between real,
+// unrelated assets — a services-data safety property worth keeping
+// even at the cost of occasionally over-fragmenting a genuinely
+// continuous run. Design linework is the one place this was actually
+// verified safe to skip (Cameron confirmed his own fire water design
+// really is one connected run), so that half of the rule stays.
 /**
  * Parse 12d records into map-ready line features — shared by both
  * services and design linework (see createLineFeatureController()
- * above for why they're structurally identical).
+ * above for why they're structurally identical). Splits on gaps
+ * (twelve-d.js splitOnGaps() — see its header for why a flat distance
+ * threshold doesn't work) ONLY for "services" — filters out anything
+ * left with <2 points (point/symbol data, or an isolated point after
+ * splitting).
  *
- * Gap-splitting (twelve-d.js splitOnGaps()) is applied per-record, only
- * when looksLikePointChamberFeature(r.name) — see that constant's
- * comment above for the full reasoning and evidence. Design linework
- * records essentially never match (CAD-drawn features aren't named
- * like as-built survey chambers), which keeps the 2026-09-02 fix for
- * "Design Fire Water.12daz" intact as a special case of this same rule
- * rather than a separate layerKind branch.
- *
- * Filters out anything left with <2 points (point/symbol data, or an
- * isolated point after splitting).
+ * *** design-linework deliberately skips splitOnGaps() (2026-09-02) ***
+ * splitOnGaps() exists to fix a real AS-BUILT SURVEY problem: services
+ * capture can bundle several physically separate real-world features
+ * (e.g. 30 distinct manhole rims) into one `data_3d` array with no
+ * marker between them, so a big jump really does mean "new feature."
+ * DESIGN linework doesn't have that problem: each `string` record
+ * already represents one deliberately-designed feature, not an
+ * accidental concatenation of unrelated ones — confirmed against a
+ * real sample, Cameron's "Design Fire Water.12daz" (one continuous,
+ * correctly-connected 20-vertex pipe run, verified against 12d's own
+ * plan view), which was being cut into 3 fragments at its two genuine
+ * long straight sections. Services stays split-by-default precisely
+ * because that same "trust the record's connectivity" assumption does
+ * NOT hold there — see the REVERTED note above for a real example of
+ * it going wrong.
  *
  * Keeps each point's real elevation as a 3rd GeoJSON coordinate value
  * ([lon, lat, elevationAhd], added 2026-08-26) — Mapbox's 2D line layer
@@ -770,16 +758,15 @@ function looksLikePointChamberFeature(name) {
  * show real pipe/linework depth rather than just terrain height. See
  * wireMapToolbar()'s onSectionLine for where it's used.
  *
- * @param {string} layerKind - tags each feature for the section-view
- *   legend/labelling (section-intersect.js) — "services" or
- *   "design-linework", not used for anything else here.
+ * @param {string} layerKind - "services" (gap-split) or
+ *   "design-linework" (not split) — also tags each feature for the
+ *   section-view legend/labelling (section-intersect.js).
  */
 function buildLineFeaturesFrom12d(records, layerKind) {
   let skippedShort = 0;
   const features = records.flatMap((r) => {
-    const segments = looksLikePointChamberFeature(r.name)
-      ? splitOnGaps(r.centrelinePoints)
-      : [r.centrelinePoints];
+    const segments =
+      layerKind === "services" ? splitOnGaps(r.centrelinePoints) : [r.centrelinePoints];
     // Same per-record values reused across however many segments this one
     // record split into — hoisted out of the per-segment map (2026-08-26,
     // same fix as buildSurfaceFeaturesFrom12d(), see its comment for why:
