@@ -509,9 +509,14 @@ function createLineFeatureController({ sourceId, layerId, group, popupHtml }) {
   const allFeatures = [];
   const knownModelPaths = new Set();
   const checkedGroups = new Set();
+  // Invisible, much wider duplicate of the visible line — see
+  // createSourceAndLayer() below for why this exists (touch hit-testing).
+  const hitLayerId = `${layerId}-hit`;
 
   function applyFilter() {
-    map.setFilter(layerId, ["in", ["get", "model"], ["literal", [...checkedGroups]]]);
+    const filter = ["in", ["get", "model"], ["literal", [...checkedGroups]]];
+    map.setFilter(layerId, filter);
+    map.setFilter(hitLayerId, filter); // keep the (invisible) hit area in sync, or a hidden model stays clickable
   }
 
   // Was hardcoded to one flat blue for every leaf row regardless of the
@@ -612,9 +617,32 @@ function createLineFeatureController({ sourceId, layerId, group, popupHtml }) {
       // valid CSS on their own).
       paint: { "line-color": ["get", "colour"], "line-width": 3 },
     });
-    map.on("click", layerId, (e) => {
+    // Invisible, much wider duplicate of the same line data, used ONLY
+    // for click/tap hit-testing — added 2026-09-02, per Cameron: "on my
+    // mobile it doesn't seem to select the elements... can't get the
+    // pipe attributes to pop up with my fingers." Mapbox's click
+    // hit-test is exact to the rendered pixels of the layer it's bound
+    // to; a mouse cursor lands precisely on a 3px line, a fingertip
+    // almost never does. line-width 20 gives a generous, finger-sized
+    // tap target without changing how the line actually looks (opacity
+    // 0 — never rendered, purely for `map.on("click", hitLayerId, ...)`
+    // below to have something wide enough to hit).
+    map.addLayer({
+      id: hitLayerId,
+      type: "line",
+      source: sourceId,
+      layout: { "line-join": "round", "line-cap": "round" },
+      paint: { "line-width": 20, "line-opacity": 0 },
+    });
+    map.on("click", hitLayerId, (e) => {
       if (drawToolState.active) return; // let the click through to the active draw tool instead
       new mapboxgl.Popup().setLngLat(e.lngLat).setHTML(popupHtml(e.features[0].properties)).addTo(map);
+    });
+    map.on("mouseenter", hitLayerId, () => {
+      map.getCanvas().style.cursor = "pointer";
+    });
+    map.on("mouseleave", hitLayerId, () => {
+      map.getCanvas().style.cursor = "";
     });
   }
 
