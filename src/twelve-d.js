@@ -382,7 +382,17 @@ export function parse12da(text) {
   }));
 
   const records = strings.map((s) => {
-    const diameter = s.pipe_value ? Number(s.pipe_value.diameter) : null;
+    // Two export shapes carry the same value, depending on 12d's "Output
+    // pipes in new format" archive-export setting: `true` writes a
+    // `pipe_value { diameter <m> }` block; `false` writes a flat
+    // `diameter_value <m>` scalar instead. Found 2026-09-03 — Cameron
+    // switched a real export to the old format (comparing 12d's
+    // "diameter_value" toggle behaviour) and every pipe's diameter (and,
+    // silently, its justify-to-centreline depth correction just below,
+    // since that's also gated on `diameter != null`) came out as
+    // null/"?" because only the new-format shape was ever read.
+    const diameterRaw = s.pipe_value ? s.pipe_value.diameter : s.diameter_value;
+    const diameter = diameterRaw != null ? Number(diameterRaw) : null;
     const justify = s.justify ?? null;
     const points = (s.data_3d ?? []).map(([e, n, z]) => [e, n, z]);
 
