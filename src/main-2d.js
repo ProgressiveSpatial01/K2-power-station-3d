@@ -19,6 +19,7 @@
 // shared-design-store.js and the README's "2D → 3D file carry-over".
 
 import mapboxgl from "mapbox-gl";
+import * as turf from "@turf/turf";
 import "mapbox-gl/dist/mapbox-gl.css";
 import * as OBC from "@thatopen/components";
 import { mga50ToWgs84, sceneToMga } from "./crs.js";
@@ -370,30 +371,40 @@ function createIfcFeatureController({ group }) {
         "circle-stroke-width": 2,
       },
     });
-    map.on("click", POINT_LAYER_ID, (e) => {
+    // Geometry-based hit-testing (2026-09-03) — see the note above
+    // createLineFeatureController() for why this replaced Mapbox's
+    // layer-scoped click (queryRenderedFeatures-based) for every
+    // popup-producing layer, not just this one.
+    map.on("click", (e) => {
       if (drawToolState.active) return; // let the click through to the active draw tool instead
-      const p = e.features[0].properties;
-      new mapboxgl.Popup()
-        .setLngLat(e.lngLat)
-        .setHTML(
-          `<b>${p.name}</b><br>IFC project base point<br>` +
-            `${p.crsName ?? "CRS unknown"}<br>` +
-            `E ${p.eastingOffset} N ${p.northingOffset}<br>RL ${p.heightOffset} AHD`
-        )
-        .addTo(map);
-    });
-    map.on("click", FOOTPRINT_FILL_LAYER_ID, (e) => {
-      if (drawToolState.active) return; // let the click through to the active draw tool instead
-      const p = e.features[0].properties;
-      new mapboxgl.Popup()
-        .setLngLat(e.lngLat)
-        .setHTML(
-          `<b>${p.name}</b><br>` +
-            "Axis-aligned bounding-box outline (not a true footprint " +
-            "polygon for rotated/non-rectangular designs — see " +
-            "ifc.js computeFootprintCornersScene())."
-        )
-        .addTo(map);
+      const visiblePoints = [...pointFeatures.values()].filter((f) => checkedIds.has(f.properties.ifcId));
+      const hitPoint = findNearestPointFeature(visiblePoints, e.lngLat, pixelsToMetersAt(e.point, 14));
+      if (hitPoint) {
+        const p = hitPoint.properties;
+        new mapboxgl.Popup()
+          .setLngLat(e.lngLat)
+          .setHTML(
+            `<b>${p.name}</b><br>IFC project base point<br>` +
+              `${p.crsName ?? "CRS unknown"}<br>` +
+              `E ${p.eastingOffset} N ${p.northingOffset}<br>RL ${p.heightOffset} AHD`
+          )
+          .addTo(map);
+        return;
+      }
+      const visibleFootprints = [...footprintFeatures.values()].filter((f) => checkedIds.has(f.properties.ifcId));
+      const hitFootprint = findContainingPolygonFeature(visibleFootprints, e.lngLat);
+      if (hitFootprint) {
+        const p = hitFootprint.properties;
+        new mapboxgl.Popup()
+          .setLngLat(e.lngLat)
+          .setHTML(
+            `<b>${p.name}</b><br>` +
+              "Axis-aligned bounding-box outline (not a true footprint " +
+              "polygon for rotated/non-rectangular designs — see " +
+              "ifc.js computeFootprintCornersScene())."
+          )
+          .addTo(map);
+      }
     });
     applyFilter();
   }
@@ -505,6 +516,85 @@ const ifcController = createIfcFeatureController({ group: designGroup });
  * reset to "all checked" on a rebuild. Acceptable for now — in practice
  * this fires once or twice a session, not continuously.
  */
+
+// *** Geometry-based click hit-testing (2026-09-03) ***
+//
+// Replaces Mapbox's layer-scoped `map.on("click", layerId, cb)` (which
+// hit-tests by querying the GPU-rendered tile buffer at the click's
+// pixel — via queryRenderedFeatures under the hood) for line/point/
+// polygon feature popups. Per Cameron, on Android Chrome: pan/zoom
+// work fine, AND placing measure/section vertices works fine (both go
+// through Mapbox's plain `click` event + `e.lngLat`), but tapping a
+// service/design/surface/IFC feature to open its popup never does —
+// across every layer type, not just the widened line hit-layer tried
+// first. That pattern (coordinate-based interaction works, pixel-
+// buffer-query-based interaction doesn't) matches a known class of
+// real-world Mapbox GL issues where touch-point-to-rendered-buffer
+// coordinate translation goes wrong on some Android/DPI combinations —
+// **not independently confirmed as the exact root cause** (still no
+// way to reproduce real mobile touch behaviour from this environment),
+// but doing hit-testing with plain geodesic maths instead sidesteps
+// that whole class of bug regardless of the precise cause, using the
+// exact same `e.lngLat` mechanism already proven reliable by the
+// measure/section tools working.
+//
+// Verified turf.pointToLineDistance()/booleanPointInPolygon() ignore a
+// 3rd (elevation) coordinate correctly (matches the plain-2D result) —
+// safe to use directly against this app's [lon, lat, elevationAhd]
+// geometries, added 2026-08-26 for section-cutting.
+
+/**
+ * Real-world metres corresponding to `pixels` on screen at the point
+ * just clicked — lets a touch-friendly tap tolerance (e.g. "within
+ * ~14px") work correctly at any zoom level/latitude, rather than a
+ * fixed metre radius that'd be far too generous zoomed out and too
+ * strict zoomed in.
+ */
+function pixelsToMetersAt(point, pixels) {
+  const a = map.unproject(point);
+  const b = map.unproject([point.x + pixels, point.y]);
+  return turf.distance([a.lng, a.lat], [b.lng, b.lat], { units: "meters" });
+}
+
+/** Nearest LineString feature to lngLat, or null if none are within toleranceM. */
+function findNearestLineFeature(features, lngLat, toleranceM) {
+  const pt = [lngLat.lng, lngLat.lat];
+  let best = null;
+  let bestDist = Infinity;
+  for (const f of features) {
+    const d = turf.pointToLineDistance(pt, f.geometry, { units: "meters" });
+    if (d < bestDist) {
+      bestDist = d;
+      best = f;
+    }
+  }
+  return bestDist <= toleranceM ? best : null;
+}
+
+/** First Polygon feature containing lngLat, or null. */
+function findContainingPolygonFeature(features, lngLat) {
+  const pt = turf.point([lngLat.lng, lngLat.lat]);
+  for (const f of features) {
+    if (turf.booleanPointInPolygon(pt, f.geometry)) return f;
+  }
+  return null;
+}
+
+/** Nearest Point feature to lngLat, or null if none are within toleranceM. */
+function findNearestPointFeature(features, lngLat, toleranceM) {
+  const pt = [lngLat.lng, lngLat.lat];
+  let best = null;
+  let bestDist = Infinity;
+  for (const f of features) {
+    const d = turf.distance(pt, f.geometry.coordinates, { units: "meters" });
+    if (d < bestDist) {
+      bestDist = d;
+      best = f;
+    }
+  }
+  return bestDist <= toleranceM ? best : null;
+}
+
 function createLineFeatureController({ sourceId, layerId, group, popupHtml }) {
   const allFeatures = [];
   const knownModelPaths = new Set();
@@ -617,16 +707,14 @@ function createLineFeatureController({ sourceId, layerId, group, popupHtml }) {
       // valid CSS on their own).
       paint: { "line-color": ["get", "colour"], "line-width": 3 },
     });
-    // Invisible, much wider duplicate of the same line data, used ONLY
-    // for click/tap hit-testing — added 2026-09-02, per Cameron: "on my
-    // mobile it doesn't seem to select the elements... can't get the
-    // pipe attributes to pop up with my fingers." Mapbox's click
-    // hit-test is exact to the rendered pixels of the layer it's bound
-    // to; a mouse cursor lands precisely on a 3px line, a fingertip
-    // almost never does. line-width 20 gives a generous, finger-sized
-    // tap target without changing how the line actually looks (opacity
-    // 0 — never rendered, purely for `map.on("click", hitLayerId, ...)`
-    // below to have something wide enough to hit).
+    // Invisible, much wider duplicate of the same line data — kept for
+    // the desktop hover cursor below (a real, working convenience), but
+    // no longer used for the actual click hit-test itself (see the
+    // "Geometry-based click hit-testing" note above this controller —
+    // 2026-09-02's fix widened this layer to fix a real hit-RADIUS
+    // problem, but Cameron's mobile still couldn't tap ANY feature type
+    // afterward, pointing at the underlying pixel-query mechanism
+    // itself rather than how wide the target was).
     map.addLayer({
       id: hitLayerId,
       type: "line",
@@ -634,9 +722,11 @@ function createLineFeatureController({ sourceId, layerId, group, popupHtml }) {
       layout: { "line-join": "round", "line-cap": "round" },
       paint: { "line-width": 20, "line-opacity": 0 },
     });
-    map.on("click", hitLayerId, (e) => {
+    map.on("click", (e) => {
       if (drawToolState.active) return; // let the click through to the active draw tool instead
-      new mapboxgl.Popup().setLngLat(e.lngLat).setHTML(popupHtml(e.features[0].properties)).addTo(map);
+      const visible = allFeatures.filter((f) => checkedGroups.has(f.properties.model));
+      const hit = findNearestLineFeature(visible, e.lngLat, pixelsToMetersAt(e.point, 14));
+      if (hit) new mapboxgl.Popup().setLngLat(e.lngLat).setHTML(popupHtml(hit.properties)).addTo(map);
     });
     map.on("mouseenter", hitLayerId, () => {
       map.getCanvas().style.cursor = "pointer";
@@ -930,9 +1020,15 @@ function createSurfaceFeatureController({ sourceId, fillLayerId, lineLayerId, gr
       source: sourceId,
       paint: { "line-color": ["get", "colour"], "line-width": 0.5, "line-opacity": 0.6 },
     });
-    map.on("click", fillLayerId, (e) => {
+    // Geometry-based hit-testing (2026-09-03) — see the note above
+    // createLineFeatureController() for why this replaced Mapbox's
+    // layer-scoped click (queryRenderedFeatures-based) for every
+    // popup-producing layer, not just this one.
+    map.on("click", (e) => {
       if (drawToolState.active) return; // let the click through to the active draw tool instead — the actual bug report
-      new mapboxgl.Popup().setLngLat(e.lngLat).setHTML(popupHtml(e.features[0].properties)).addTo(map);
+      const visible = allFeatures.filter((f) => checkedSurfaces.has(f.properties.surfaceId));
+      const hit = findContainingPolygonFeature(visible, e.lngLat);
+      if (hit) new mapboxgl.Popup().setLngLat(e.lngLat).setHTML(popupHtml(hit.properties)).addTo(map);
     });
   }
 
