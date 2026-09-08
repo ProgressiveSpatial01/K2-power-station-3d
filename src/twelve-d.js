@@ -415,16 +415,39 @@ export function parse12da(text) {
   }));
 
   const records = strings.map((s) => {
-    // Two export shapes carry the same value, depending on 12d's "Output
-    // pipes in new format" archive-export setting: `true` writes a
-    // `pipe_value { diameter <m> }` block; `false` writes a flat
-    // `diameter_value <m>` scalar instead. Found 2026-09-03 — Cameron
-    // switched a real export to the old format (comparing 12d's
-    // "diameter_value" toggle behaviour) and every pipe's diameter (and,
-    // silently, its justify-to-centreline depth correction just below,
-    // since that's also gated on `diameter != null`) came out as
-    // null/"?" because only the new-format shape was ever read.
-    const diameterRaw = s.pipe_value ? s.pipe_value.diameter : s.diameter_value;
+    // THREE export shapes have now carried the same value: `pipe_value
+    // { diameter <m> }` (12d's "Output pipes in new format" = true),
+    // a flat `diameter_value <m>` scalar (same setting = false, found
+    // 2026-09-03 — every pipe's diameter, and silently its
+    // justify-to-centreline depth correction just below since that's
+    // also gated on `diameter != null`, came out as null/"?" until this
+    // was read too), and now `pipe_data { properties { diameter <m> }
+    // ... }` — one `properties` entry PER VERTEX (found 2026-09-09, a
+    // real BIM-attributed asbuilt export: 37 vertices, 37 `properties`
+    // blocks, all "0.16" in this sample). We only keep one diameter per
+    // record (not per-vertex), so this takes the first entry — correct
+    // whenever it's genuinely constant, as seen so far; if a future
+    // export has real per-vertex diameter variation, this would need a
+    // proper per-vertex model instead. Warn (not throw) if this sample's
+    // "constant" assumption doesn't hold, since a silently-wrong
+    // diameter would also silently mis-apply the depth correction below.
+    let diameterRaw;
+    if (s.pipe_value) {
+      diameterRaw = s.pipe_value.diameter;
+    } else if (s.pipe_data?.properties) {
+      const props = Array.isArray(s.pipe_data.properties) ? s.pipe_data.properties : [s.pipe_data.properties];
+      diameterRaw = props[0]?.diameter;
+      const distinct = new Set(props.map((p) => p.diameter));
+      if (distinct.size > 1) {
+        console.warn(
+          `[12da] "${s.name}" has varying per-vertex diameters in pipe_data (${[...distinct].join(", ")}) — ` +
+            `using the first (${diameterRaw}) for the whole record. Ask Cameron before trusting this on a ` +
+            "pipe that's genuinely meant to taper."
+        );
+      }
+    } else {
+      diameterRaw = s.diameter_value;
+    }
     const diameter = diameterRaw != null ? Number(diameterRaw) : null;
     const justify = s.justify ?? null;
     const points = (s.data_3d ?? []).map(([e, n, z]) => [e, n, z]);
