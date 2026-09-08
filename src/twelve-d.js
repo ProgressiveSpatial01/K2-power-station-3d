@@ -57,11 +57,28 @@ function tokenize(text) {
       continue;
     }
     if (c === '"') {
+      // Backslash-escaped quotes (\") — found 2026-09-09, a real export
+      // with "Output object tree paths" enabled embeds a full project/
+      // model/string GUID trail as ONE quoted string value containing
+      // its own literal quote marks (e.g. `model_name=\"...\"`), escaped
+      // C/JSON-style. The naive version of this loop had no concept of
+      // escaping at all — it just stopped at the first literal `"`,
+      // which lands MID-STRING here, corrupting everything parsed after
+      // it ("12da parse error: expected key, got ... model_id=\\").
+      // `\\` is unescaped too, for the same reason; any other backslash
+      // sequence is kept as-is rather than treated as an error, since
+      // this format isn't formally specified anywhere — safer to accept
+      // an unrecognised escape literally than to throw on it.
       let j = i + 1;
       let s = "";
       while (j < n && text[j] !== '"') {
-        s += text[j];
-        j++;
+        if (text[j] === "\\" && (text[j + 1] === '"' || text[j + 1] === "\\")) {
+          s += text[j + 1];
+          j += 2;
+        } else {
+          s += text[j];
+          j++;
+        }
       }
       tokens.push({ type: "STRING", value: s });
       i = j + 1;
@@ -195,6 +212,22 @@ function parseStatement(tokens, pos) {
     return { key, value: readNumberRow(tokens, pos, 3) };
   }
   if (key === "nulling") {
+    return { key, value: readFlatNumberList(tokens, pos) };
+  }
+  // `vertex_uid_data { <one integer per vertex> }` — found 2026-09-09, a
+  // real export with "Output super string vertex/segment uid's" enabled:
+  // an internal 12d cross-reference id per vertex, same flat-list shape
+  // as `nulling` (not row-grouped like data_3d/points). NOT special-
+  // casing this is what caused a real, catastrophic parse failure:
+  // falling through to the generic block parser, it tries to read the
+  // numbers as key/value pairs — for a string with an ODD vertex count
+  // (so an unpaired trailing number), that swallows the block's own
+  // closing "}" as a bogus scalar value, permanently losing sync for
+  // the rest of the file (every subsequent model/string from that point
+  // silently mis-parsed as if still nested inside this one block).
+  // We don't currently use this data for anything — parsed correctly
+  // and discarded, same as `neighbours`.
+  if (key === "vertex_uid_data") {
     return { key, value: readFlatNumberList(tokens, pos) };
   }
 
