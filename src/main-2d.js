@@ -852,11 +852,35 @@ const designLineworkController = createLineFeatureController({
  *   "design-linework" (not split) — also tags each feature for the
  *   section-view legend/labelling (section-intersect.js).
  */
+// Narrow, per-record exceptions to "services always gets gap-split" —
+// deliberately NOT a name/keyword pattern (that was tried for services
+// generally on 2026-09-03, reverted the same day after it wrongly
+// un-split "fuel ug line," a real case of one generic name covering
+// several separate physical features). Every entry here is instead
+// one specific (model, name) pair Cameron has personally confirmed
+// really is a single continuous run — via a 12d reference screenshot,
+// same as how the design-linework fire water case was confirmed.
+// Add to this list only on that kind of explicit per-case confirmation,
+// never by inference from how a name reads.
+//
+// "04 K2 Power Station/Services/Asbuilt/Fire Suppression" / "Fire
+// Suppression" — added 2026-09-09: Cameron's 12d screenshot showed one
+// continuous run where the map showed it fragmented. Its real 37-point
+// record mixes tiny joint spacing (0.1-0.9m) with several genuine
+// 3-8.7m survey-chainage legs — splitOnGaps() misread those as feature
+// boundaries, same failure mode as the original design fire water case.
+const CONFIRMED_CONTINUOUS_SERVICE_RECORDS = new Set([
+  "04 K2 Power Station/Services/Asbuilt/Fire Suppression|Fire Suppression",
+]);
+
 function buildLineFeaturesFrom12d(records, layerKind) {
   let skippedShort = 0;
   const features = records.flatMap((r) => {
+    const confirmedContinuous = CONFIRMED_CONTINUOUS_SERVICE_RECORDS.has(`${r.model}|${r.name}`);
     const segments =
-      layerKind === "services" ? splitOnGaps(r.centrelinePoints) : [r.centrelinePoints];
+      layerKind === "services" && !confirmedContinuous
+        ? splitOnGaps(r.centrelinePoints)
+        : [r.centrelinePoints];
     // Same per-record values reused across however many segments this one
     // record split into — hoisted out of the per-segment map (2026-08-26,
     // same fix as buildSurfaceFeaturesFrom12d(), see its comment for why:
