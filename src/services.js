@@ -10,7 +10,7 @@
 
 import * as THREE from "three";
 import { mgaToScene } from "./crs.js";
-import { splitOnGaps } from "./twelve-d.js";
+import { splitOnGaps, isConfirmedContinuousServiceRecord } from "./twelve-d.js";
 import { normalizeColour } from "./service-colour.js";
 
 const FALLBACK_COLOR = "#2fa3ff"; // used when a record's own colour can't be resolved (see service-colour.js)
@@ -34,7 +34,18 @@ export function buildServiceMeshes(records, sceneOriginMga) {
     // would extrude as one spurious tube connecting unrelated pits here
     // too. See twelve-d.js splitOnGaps() for how the threshold was
     // chosen from real data, not guessed.
-    const segments = splitOnGaps(record.centrelinePoints);
+    //
+    // isConfirmedContinuousServiceRecord() check added 2026-09-10 — this
+    // module still had the OLD unconditional-split behaviour (matching a
+    // real bug already found and fixed on the 2D map for the same
+    // records: a genuine single continuous run can legitimately mix tiny
+    // local jogs with a few much longer real chainage legs, which this
+    // heuristic misreads as feature boundaries). See twelve-d.js's
+    // isConfirmedContinuousServiceRecord() for the specific confirmed
+    // cases and why this can't just be a name pattern.
+    const segments = isConfirmedContinuousServiceRecord(record)
+      ? [record.centrelinePoints]
+      : splitOnGaps(record.centrelinePoints);
 
     const color = normalizeColour(record.colour, FALLBACK_COLOR);
     const material = new THREE.MeshStandardMaterial({

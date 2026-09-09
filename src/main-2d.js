@@ -31,7 +31,7 @@ import {
   computeFootprintCornersScene,
   resolveCoordinationOffset,
 } from "./ifc.js";
-import { loadTwelveDaFile, splitOnGaps } from "./twelve-d.js";
+import { loadTwelveDaFile, splitOnGaps, isConfirmedContinuousServiceRecord } from "./twelve-d.js";
 import { normalizeColour } from "./service-colour.js";
 import { createLayerGroup } from "./layer-tree.js";
 import { buildModelTree } from "./model-tree.js";
@@ -852,54 +852,11 @@ const designLineworkController = createLineFeatureController({
  *   "design-linework" (not split) — also tags each feature for the
  *   section-view legend/labelling (section-intersect.js).
  */
-// Narrow, per-record exceptions to "services always gets gap-split" —
-// deliberately NOT a name/keyword pattern (that was tried for services
-// generally on 2026-09-03, reverted the same day after it wrongly
-// un-split "fuel ug line," a real case of one generic name covering
-// several separate physical features). Every entry here is instead one
-// specific PHYSICAL RECORD Cameron has personally confirmed really is
-// a single continuous run — via a 12d reference screenshot, same as
-// how the design-linework fire water case was confirmed. Add to this
-// list only on that kind of explicit per-case confirmation, never by
-// inference from how a name reads.
-//
-// Keyed on model|name|firstPointE,firstPointN (E/N rounded to the
-// nearest metre) rather than just model|name — added 2026-09-09 when
-// "POWER UG LV PIPE 50" turned out to label 95 separate real conduits
-// scattered across the whole site (easting 384794-384934), not one
-// alignment; a model+name-only key would have wrongly exempted all 95
-// instead of just the one Cameron actually confirmed.
-//
-// - "...Services/Asbuilt/Fire Suppression" / "Fire Suppression" @
-//   (384921,6433997) — added 2026-09-09: Cameron's 12d screenshot
-//   showed one continuous run where the map showed it fragmented. Its
-//   real 37-point record mixes tiny joint spacing (0.1-0.9m) with
-//   several genuine 3-8.7m survey-chainage legs — splitOnGaps()
-//   misread those as feature boundaries, same failure mode as the
-//   original design fire water case.
-// - "...Services/Loc/Power/Low Voltage" / "POWER UG LV PIPE 50" @
-//   (384882,6434095) — added 2026-09-09, same session: Cameron's 12d
-//   screenshot again showed a continuous LV run at this exact spot
-//   (matches the fire suppression cluster's NW-corner location) where
-//   the map showed a gap. Real 12-point record mixes small local jogs
-//   (<2m) with four genuine 5-15m legs; splitOnGaps() cut it into
-//   [5,1,1,1,4] — three of those five pieces single points, invisible.
-//   Two near-duplicate records exist at this same coordinate (survey
-//   re-shot the same conduit ~0.1m apart) — both covered by the same
-//   rounded-coordinate key.
-const CONFIRMED_CONTINUOUS_SERVICE_RECORDS = new Set([
-  "04 K2 Power Station/Services/Asbuilt/Fire Suppression|Fire Suppression|384921,6433997",
-  "04 K2 Power Station/Services/Loc/Power/Low Voltage|POWER UG LV PIPE 50|384882,6434095",
-]);
-
 function buildLineFeaturesFrom12d(records, layerKind) {
   let skippedShort = 0;
   const features = records.flatMap((r) => {
-    const [firstE, firstN] = r.centrelinePoints[0] ?? [];
-    const coordKey = firstE != null ? `${Math.round(firstE)},${Math.round(firstN)}` : "";
-    const confirmedContinuous = CONFIRMED_CONTINUOUS_SERVICE_RECORDS.has(`${r.model}|${r.name}|${coordKey}`);
     const segments =
-      layerKind === "services" && !confirmedContinuous
+      layerKind === "services" && !isConfirmedContinuousServiceRecord(r)
         ? splitOnGaps(r.centrelinePoints)
         : [r.centrelinePoints];
     // Same per-record values reused across however many segments this one

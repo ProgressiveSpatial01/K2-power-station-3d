@@ -10,12 +10,12 @@
       #hud {
         position: absolute; top: 8px; left: 8px; z-index: 10;
         font: 12px/1.5 system-ui, sans-serif; color: #eee;
-        background: rgba(0,0,0,0.55); padding: 8px 10px; border-radius: 6px;
-        max-width: 340px;
+        background: rgba(23,24,26,0.92); border: 1px solid #333; padding: 10px 12px; border-radius: 8px;
+        max-width: 340px; max-height: calc(100vh - 24px); overflow-y: auto;
       }
       #hud b { color: #ffb454; }
       #hud label { display: block; margin-top: 8px; font-size: 11px; color: #bbb; }
-      #hud input[type="file"] { margin-top: 2px; display: block; }
+      #hud input[type="file"] { margin-top: 2px; display: block; font-size: 11px; width: 100%; color: #ccc; }
       #view-toggle {
         position: absolute; top: 8px; right: 8px; z-index: 10;
         font: 13px/1 system-ui, sans-serif; color: #fff;
@@ -23,18 +23,59 @@
         text-decoration: none; font-weight: 600;
       }
       #view-toggle:hover { background: #57b6ff; }
+
+      /* Shared Data / custodian mode — same visual language and class
+         names as index.html's sidebar (2026-09-10), so renderSharedFilesList()
+         and friends work identically in both pages without a rewrite. */
+      .hud-section { border-top: 1px solid #2c2e31; margin-top: 10px; padding-top: 10px; }
+      .hud-section:first-child { border-top: none; margin-top: 0; padding-top: 0; }
+      .hud-section h2 {
+        font-size: 10px; text-transform: uppercase; letter-spacing: 0.06em;
+        color: #8a8f98; margin: 0 0 6px;
+      }
+      #custodian-toggle {
+        margin-top: 8px; width: 100%; font-size: 11px; padding: 6px 0;
+        background: #1c1e21; border: 1px solid #3a3d42; border-radius: 4px; color: #ccc; cursor: pointer;
+      }
+      #custodian-toggle:hover { border-color: #57b6ff; color: #fff; }
+      #custodian-toggle.unlocked { background: #1c3a2a; border-color: #2fbf6e; color: #7ee7ac; }
+
+      .shared-files-empty { font-size: 11px; color: #666; font-style: italic; margin: 0; }
+      .shared-file-row {
+        display: flex; align-items: center; gap: 6px; padding: 4px 0; font-size: 11px; color: #ccc;
+        border-bottom: 1px solid #26282b;
+      }
+      .shared-file-row .shared-file-name { flex: 1; min-width: 0; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
+      .shared-file-row .shared-file-meta { color: #777; font-size: 10px; flex-shrink: 0; }
+      .shared-file-row .shared-file-delete {
+        flex-shrink: 0; background: none; border: 1px solid #444; color: #aaa; border-radius: 4px;
+        padding: 1px 6px; cursor: pointer; font-size: 11px;
+      }
+      .shared-file-row .shared-file-delete:hover { color: #fff; border-color: #d9534f; }
     </style>
   </head>
   <body>
     <div id="app">
       <a id="view-toggle" href="/index.html">← 2D Map</a>
       <div id="hud">
-        <div><b>K2 3D POC</b> — Phase A/B scaffold. Known issue: 3D scene may render blank (see README) — being investigated.</div>
+        <div><b>K2 3D</b></div>
         <div id="status">Loading terrain…</div>
-        <label for="ifc-input">IFC design (.ifc)</label>
-        <input id="ifc-input" type="file" accept=".ifc" />
-        <label for="services-input">12d services (.12da / .12daz)</label>
-        <input id="services-input" type="file" accept=".12da,.12daz" />
+
+        <div class="hud-section">
+          <h2>Shared Data</h2>
+          <div id="shared-files-list">
+            <p class="shared-files-empty">Nothing shared yet.</p>
+          </div>
+          <button id="custodian-toggle" type="button">🔒 Unlock custodian mode</button>
+        </div>
+
+        <div id="add-data-section" class="hud-section" style="display: none;">
+          <h2>Add Data</h2>
+          <label for="design-input">Design (.ifc / .12da / .12daz)</label>
+          <input id="design-input" type="file" accept=".ifc,.12da,.12daz" />
+          <label for="services-input">12d services (.12da / .12daz)</label>
+          <input id="services-input" type="file" accept=".12da,.12daz" />
+        </div>
       </div>
     </div>
     <script type="module" src="/src/main.js"></script>
