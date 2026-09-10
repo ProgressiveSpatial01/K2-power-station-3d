@@ -1,9 +1,9 @@
 // main.js — Phase A scaffold: one Three.js scene holding terrain + an
-// IFC design + 12d-sourced underground services + (new 2026-09-10) 12d
-// surfaces, all sharing a common local-metres coordinate space anchored
-// to a GDA2020/MGA50 scene origin. This is deliberately minimal — the
-// point of Phase A/early Phase B is proving these can live in one
-// correctly-georeferenced scene, not UI polish.
+// IFC design + 12d-sourced underground services + 12d surfaces + (new
+// 2026-09-10) 12d design linework, all sharing a common local-metres
+// coordinate space anchored to a GDA2020/MGA50 scene origin. This is
+// deliberately minimal — the point of Phase A/early Phase B is proving
+// these can live in one correctly-georeferenced scene, not UI polish.
 
 import * as OBC from "@thatopen/components";
 import * as THREE from "three";
@@ -12,6 +12,7 @@ import { setupIfcLoader, loadIfcFile, extractGeoreference, computeIfcPlacement }
 import { loadTwelveDaFile } from "./twelve-d.js";
 import { buildServiceMeshes } from "./services.js";
 import { buildSurfaceMeshes } from "./surfaces-3d.js";
+import { buildDesignLineworkMeshes } from "./design-linework-3d.js";
 import { roundTripCheck } from "./crs.js";
 import {
   getCustodianSecret,
@@ -135,11 +136,10 @@ async function handleIfcFile(file, ctx, opts = {}) {
 /**
  * "Design" 12d files (.12da/.12daz) can contain surfaces (`full_tin`
  * records) and/or design linework (`string` records) — see twelve-d.js.
- * Only surfaces render in 3D so far (surfaces-3d.js, new 2026-09-10);
- * linework doesn't have a 3D representation yet. Rather than silently
- * dropping it, any linework present is called out in the status message
- * so it's discoverable, not just missing without a trace — same
- * reasoning as parse12da()'s unrecognizedTopLevelKeys.
+ * Both render in 3D: surfaces via surfaces-3d.js, linework via
+ * design-linework-3d.js (added 2026-09-10, per Cameron: "can we go with
+ * the 3d linework as well, it will be handy i think" — surfaces landed
+ * first, this closes the gap).
  * @param {{ skipSharing?: boolean }} [opts]
  */
 async function handleDesign12dFile(file, ctx, opts = {}) {
@@ -171,7 +171,12 @@ async function handleDesign12dFile(file, ctx, opts = {}) {
       );
     }
     if (hasLinework) {
-      messages.push(`${records.length} design linework string(s) NOT shown — 3D linework rendering isn't built yet`);
+      const { group, skippedShort } = buildDesignLineworkMeshes(records, SCENE_ORIGIN_MGA);
+      ctx.world.scene.three.add(group);
+      messages.push(
+        `${records.length - skippedShort} design linework string(s) added` +
+          (skippedShort > 0 ? ` (${skippedShort} point/symbol record(s) skipped)` : "")
+      );
     }
     setStatus(`Loaded ${file.name}: ${messages.join("; ")}.`);
     if (!opts.skipSharing) await shareIfCustodian("design", file, null);
