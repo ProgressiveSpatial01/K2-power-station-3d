@@ -18,7 +18,8 @@
     "@vercel/blob": "^2.8.0",
     "mapbox-gl": "^3.29.0",
     "proj4": "^2.11.0",
-    "three": "^0.185.1"
+    "three": "^0.185.1",
+    "web-ifc": "0.0.77"
   },
   "devDependencies": {
     "vite": "^5.4.0"

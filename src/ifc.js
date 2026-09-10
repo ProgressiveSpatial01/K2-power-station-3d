@@ -21,7 +21,15 @@
 
 import * as OBC from "@thatopen/components";
 import * as THREE from "three";
+import { IfcAPI } from "web-ifc";
 import { mgaToScene } from "./crs.js";
+
+// web-ifc WASM location — used by BOTH the @thatopen IfcLoader.setup()
+// below and the standalone raw IfcAPI in extractPlanTrianglesFromBuffer().
+// Keep this, the `web-ifc` dep in package.json, and the version in the
+// comment on IfcLoader.setup()'s pin all in lockstep — a mismatched WASM
+// build is a classic source of confusing parse failures.
+export const WEB_IFC_WASM_PATH = "https://unpkg.com/web-ifc@0.0.77/";
 
 /**
  * Set up an IfcLoader + FragmentsManager wired into the given world/scene.
@@ -36,7 +44,7 @@ export async function setupIfcLoader(components, world) {
       // dependency (checked via registry.npmjs.org 2026-08-24). If you
       // bump @thatopen/components, re-check this pin — a mismatched
       // WASM build is a common source of confusing parse failures.
-      path: "https://unpkg.com/web-ifc@0.0.77/",
+      path: WEB_IFC_WASM_PATH,
       absolute: true,
     },
   });
@@ -428,59 +436,98 @@ export function computeFootprintCornersScene(model) {
   ];
 }
 
+// Standalone raw web-ifc parser, lazily initialised once per page and
+// reused — see extractPlanTrianglesFromBuffer() for why the loaded
+// @thatopen model can't be read back for geometry.
+let rawIfcApiPromise = null;
+function getRawIfcApi() {
+  if (!rawIfcApiPromise) {
+    rawIfcApiPromise = (async () => {
+      const api = new IfcAPI();
+      api.SetWasmPath(WEB_IFC_WASM_PATH, true); // (path, isAbsolute)
+      await api.Init();
+      return api;
+    })();
+  }
+  return rawIfcApiPromise;
+}
+
 /**
- * Every triangle of the placed model's geometry, projected to the
- * horizontal plane (scene XZ, Y dropped) — the raw material for a
- * "solid shaded" plan render of the design on the 2D map, per Cameron
- * (2026-09-10): "is there anyway we can render the .ifc files on the 2D
- * view? even just a solid shaded version". Same scene-XZ, safe-precision
- * contract as computeFootprintCornersScene() above (call this only after
- * the model's been positioned/rotated by its caller), so the caller
- * converts these back to MGA/WGS84 the exact same way it does the
- * bounding-box corners.
+ * Real plan-view triangles of an IFC's geometry, taken straight from a
+ * raw `web-ifc` parse of the same file bytes — the material for the 2D
+ * map's "solid shaded" IFC render, per Cameron (2026-09-10): "render the
+ * .ifc files on the 2D view? even just a solid shaded version".
  *
- * Unlike the bounding box, this follows the real outline — concave
- * edges, notches, and internal voids (a slab penetration has no
- * triangles over it, so it stays unfilled) all come through. Overlapping
- * triangles (a solid's top and bottom faces both project onto the same
- * ground area) are harmless: the caller emits them as one MultiPolygon
- * Feature, which Mapbox paints in a single pass — overlaps within one
- * feature don't compound opacity.
+ * WHY A SECOND PARSE rather than reading the already-loaded @thatopen
+ * model: that model's THREE geometry `BufferAttribute`s carry `.count`/
+ * `.itemSize` but NO main-thread `.array` — the vertex data lives
+ * worker/GPU-side and isn't reachable from here (verified 2026-09-10
+ * against the running app; a first cut that walked `attributes.position`
+ * hit "Cannot read properties of undefined" on every real mesh, and only
+ * ever saw an internal 8-vertex helper box). The bounding-box footprint
+ * works only because each geometry keeps a precomputed `boundingBox`.
+ * `web-ifc` is already an installed dependency (pinned alongside
+ * @thatopen) and `StreamAllMeshes` is a long-stable API, so a direct
+ * second parse is the sturdy option. IFC files here are small (real
+ * samples 16-330 KB); the extra parse is well under a second.
  *
- * `maxTriangles` is a guard against a very large streamed design turning
- * into a multi-megabyte GeoJSON MultiPolygon; the caller surfaces
- * `truncated` so a partial shade isn't mistaken for the whole design.
+ * Vertices come back in web-ifc's flat world frame: `(x, y, z) =
+ * (easting-axis, height, -northing-axis)` — Y-up, Z is *negated*
+ * northing. Verified against real files: `Sample_IFC.ifc`'s raw X range
+ * matched its `IFCCARTESIANPOINT` easting range exactly, and Z matched
+ * the negated northing range. `COORDINATE_TO_ORIGIN` is left OFF, so
+ * geometry stays in the file's own space — real GDA2020/MGA50 for a
+ * no-IfcMapConversion K2 export, model-local for one with an
+ * IfcMapConversion. The caller maps each `[x, y, z]` to MGA50 `[E, N]`
+ * accordingly (`[x, -z]` for the already-real case, the IfcMapConversion
+ * formula for the local one).
  *
- * @param {*} model - loaded model from loadIfcFile(), already placed
- * @param {{ maxTriangles?: number }} [opts]
- * @returns {{ triangles: Array<Array<[number, number]>>, truncated: boolean }}
- *   each triangle is 3 [x, z] scene-metre vertices (not closed)
+ * @param {Uint8Array} buffer - raw .ifc bytes (the same ones handed to loadIfcFile)
+ * @param {{ maxTriangles?: number }} [opts] - `maxTriangles` caps the GeoJSON size for a huge model; `truncated` is returned true when it bites
+ * @returns {Promise<{ triangles: Array<Array<[number, number, number]>>, truncated: boolean, meshCount: number }>}
  */
-export function computeMeshPlanTrianglesScene(model, { maxTriangles = 20000 } = {}) {
-  model.object.updateWorldMatrix(true, true);
+export async function extractPlanTrianglesFromBuffer(buffer, { maxTriangles = 60000 } = {}) {
+  const api = await getRawIfcApi();
+  const modelId = api.OpenModel(buffer, { COORDINATE_TO_ORIGIN: false });
   const triangles = [];
-  const v = new THREE.Vector3();
   let truncated = false;
+  let meshCount = 0;
 
-  model.object.traverse((child) => {
-    if (truncated || !child.isMesh || !child.geometry?.attributes?.position) return;
-    const pos = child.geometry.attributes.position;
-    const index = child.geometry.index;
-    const triCount = index ? index.count / 3 : pos.count / 3;
-    for (let t = 0; t < triCount; t++) {
-      if (triangles.length >= maxTriangles) {
-        truncated = true;
-        return;
+  try {
+    api.StreamAllMeshes(modelId, (mesh) => {
+      if (truncated) return;
+      const placedGeometries = mesh.geometries;
+      for (let i = 0; i < placedGeometries.size(); i++) {
+        if (truncated) break;
+        meshCount++;
+        const placed = placedGeometries.get(i);
+        const geom = api.GetGeometry(modelId, placed.geometryExpressID);
+        const verts = api.GetVertexArray(geom.GetVertexData(), geom.GetVertexDataSize()); // [x,y,z,nx,ny,nz]*
+        const idx = api.GetIndexArray(geom.GetIndexData(), geom.GetIndexDataSize());
+        const m = placed.flatTransformation; // column-major 4x4, bakes the element's placement
+        const tx = (x, y, z) => [
+          m[0] * x + m[4] * y + m[8] * z + m[12],
+          m[1] * x + m[5] * y + m[9] * z + m[13],
+          m[2] * x + m[6] * y + m[10] * z + m[14],
+        ];
+        for (let k = 0; k + 2 < idx.length; k += 3) {
+          if (triangles.length >= maxTriangles) {
+            truncated = true;
+            break;
+          }
+          const ring = [];
+          for (let j = 0; j < 3; j++) {
+            const vi = idx[k + j] * 6;
+            ring.push(tx(verts[vi], verts[vi + 1], verts[vi + 2]));
+          }
+          triangles.push(ring);
+        }
+        geom.delete();
       }
-      const ring = [];
-      for (let k = 0; k < 3; k++) {
-        const i = index ? index.getX(t * 3 + k) : t * 3 + k;
-        v.set(pos.getX(i), pos.getY(i), pos.getZ(i)).applyMatrix4(child.matrixWorld);
-        ring.push([v.x, v.z]);
-      }
-      triangles.push(ring);
-    }
-  });
+    });
+  } finally {
+    api.CloseModel(modelId);
+  }
 
-  return { triangles, truncated };
+  return { triangles, truncated, meshCount };
 }

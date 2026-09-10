@@ -29,7 +29,7 @@ import {
   loadIfcFile,
   computeIfcPlacement,
   computeFootprintCornersScene,
-  computeMeshPlanTrianglesScene,
+  extractPlanTrianglesFromBuffer,
   resolveCoordinationOffset,
 } from "./ifc.js";
 import { loadTwelveDaFile, splitOnGaps, isConfirmedContinuousServiceRecord } from "./twelve-d.js";
@@ -368,7 +368,7 @@ function createIfcFeatureController({ group }) {
       id: FOOTPRINT_FILL_LAYER_ID,
       type: "fill",
       source: FOOTPRINT_SOURCE_ID,
-      paint: { "fill-color": "#ffb454", "fill-opacity": 0.12 },
+      paint: { "fill-color": "#ffb454", "fill-opacity": 0.18 },
     });
     // Solid shade of the real geometry, on top of the (now fainter)
     // bounding-box fill.
@@ -1561,37 +1561,76 @@ async function handleIfcDesignFile(file, subgroupName, opts = {}) {
           properties: { name: file.name },
         };
 
-        // Solid shaded plan render (2026-09-10, per Cameron: "is there
-        // anyway we can render the .ifc files on the 2D view? even just a
-        // solid shaded version") — every mesh triangle projected to plan,
-        // converted back to WGS84 the same way the bounding box is, as
-        // one MultiPolygon.
-        const { triangles: planTris, truncated } = computeMeshPlanTrianglesScene(model);
-        const meshRings = planTris.map((tri) => {
-          const triRing = tri.map(([x, z]) => mga50ToWgs84(sceneToMga([x, 0, z], localOrigin)));
-          triRing.push(triRing[0]);
-          return [triRing];
-        });
-        const meshFeature = meshRings.length
-          ? {
-              type: "Feature",
-              geometry: { type: "MultiPolygon", coordinates: meshRings },
-              properties: { name: file.name, truncated },
-            }
-          : null;
-
-        ifcController.setDesign(file.name, pointFeature, footprintFeature, subgroupName, meshFeature);
-
+        // Show the footprint straight away — the solid-shade extraction
+        // below is best-effort (a second raw parse) and mustn't be able
+        // to cost us the footprint if it fails.
+        ifcController.setDesign(file.name, pointFeature, footprintFeature, subgroupName);
         setStatus(
           `Placed ${file.name} at MGA50 E${localOrigin[0].toFixed(3)} N${localOrigin[1].toFixed(3)} ` +
-            `(${crsLabel}). ${
-              meshFeature
-                ? `Shaded plan render from ${planTris.length.toLocaleString()} mesh triangles` +
-                  (truncated ? " (truncated — design is very large, shade is partial)" : "") +
-                  "; dashed outline is its axis-aligned bounding box."
-                : "Footprint shown is an axis-aligned bounding-box outline, not the true design shape (see ifc.js)."
-            }`
+            `(${crsLabel}). Building the solid shade…`
         );
+
+        // Solid shaded plan render (2026-09-10, per Cameron: "is there
+        // anyway we can render the .ifc files on the 2D view? even just a
+        // solid shaded version"). Real geometry from a raw web-ifc parse
+        // (see ifc.js extractPlanTrianglesFromBuffer() for why the loaded
+        // model can't be read back), mapped to MGA50 by the same two-case
+        // logic that placed the model: geometry that's already real MGA
+        // -> [x, -z]; model-local geometry -> the IfcMapConversion
+        // rotation+offset (buildingSMART formula; web-ifc's flat vertex
+        // is [easting-axis, height, -northing-axis], so x_m = x, y_m = -z).
+        try {
+          const vertToMga =
+            georef && georef.isKnownMga50
+              ? ([x, , z]) => {
+                  const a = georef.xAxisAbscissa;
+                  const b = georef.xAxisOrdinate;
+                  const s = georef.scale || 1;
+                  return [
+                    georef.eastingOffset + s * (x * a + z * b),
+                    georef.northingOffset + s * (x * b - z * a),
+                  ];
+                }
+              : ([x, , z]) => [x, -z];
+
+          const { triangles: planTris, truncated, meshCount } = await extractPlanTrianglesFromBuffer(buffer);
+          console.log(
+            `[K2-2D] ${file.name}: ${planTris.length} plan triangles from ${meshCount} web-ifc meshes (truncated=${truncated})`
+          );
+          const meshRings = planTris.map((tri) => {
+            const triRing = tri.map((vert) => mga50ToWgs84(vertToMga(vert)));
+            triRing.push(triRing[0]);
+            return [triRing];
+          });
+          const meshFeature = meshRings.length
+            ? {
+                type: "Feature",
+                geometry: { type: "MultiPolygon", coordinates: meshRings },
+                properties: { name: file.name, truncated },
+              }
+            : null;
+
+          if (meshFeature) {
+            ifcController.setDesign(file.name, pointFeature, footprintFeature, subgroupName, meshFeature);
+          }
+          setStatus(
+            `Placed ${file.name} at MGA50 E${localOrigin[0].toFixed(3)} N${localOrigin[1].toFixed(3)} ` +
+              `(${crsLabel}). ${
+                meshFeature
+                  ? `Solid shade from ${planTris.length.toLocaleString()} mesh triangles` +
+                    (truncated ? " (truncated — very large design, shade is partial)" : "") +
+                    "; dashed outline is the axis-aligned bounding box."
+                  : "Bounding-box outline only — no readable geometry for a solid shade."
+              }`
+          );
+        } catch (shadeErr) {
+          console.warn("[K2-2D] IFC solid-shade extraction failed (footprint still shown):", shadeErr);
+          setStatus(
+            `Placed ${file.name} at MGA50 E${localOrigin[0].toFixed(3)} N${localOrigin[1].toFixed(3)} ` +
+              `(${crsLabel}). Bounding-box outline shown; couldn't build the solid shade (${shadeErr.message} — see console).`
+          );
+        }
+
         stashDesignFile("design", file); // carries over to the 3D view — see shared-design-store.js
         if (!opts.skipSharing) await shareIfCustodian("design", file, subgroupName);
       } catch (err) {
