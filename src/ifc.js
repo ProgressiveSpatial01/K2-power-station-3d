@@ -427,3 +427,60 @@ export function computeFootprintCornersScene(model) {
     [box.min.x, box.max.z],
   ];
 }
+
+/**
+ * Every triangle of the placed model's geometry, projected to the
+ * horizontal plane (scene XZ, Y dropped) — the raw material for a
+ * "solid shaded" plan render of the design on the 2D map, per Cameron
+ * (2026-09-10): "is there anyway we can render the .ifc files on the 2D
+ * view? even just a solid shaded version". Same scene-XZ, safe-precision
+ * contract as computeFootprintCornersScene() above (call this only after
+ * the model's been positioned/rotated by its caller), so the caller
+ * converts these back to MGA/WGS84 the exact same way it does the
+ * bounding-box corners.
+ *
+ * Unlike the bounding box, this follows the real outline — concave
+ * edges, notches, and internal voids (a slab penetration has no
+ * triangles over it, so it stays unfilled) all come through. Overlapping
+ * triangles (a solid's top and bottom faces both project onto the same
+ * ground area) are harmless: the caller emits them as one MultiPolygon
+ * Feature, which Mapbox paints in a single pass — overlaps within one
+ * feature don't compound opacity.
+ *
+ * `maxTriangles` is a guard against a very large streamed design turning
+ * into a multi-megabyte GeoJSON MultiPolygon; the caller surfaces
+ * `truncated` so a partial shade isn't mistaken for the whole design.
+ *
+ * @param {*} model - loaded model from loadIfcFile(), already placed
+ * @param {{ maxTriangles?: number }} [opts]
+ * @returns {{ triangles: Array<Array<[number, number]>>, truncated: boolean }}
+ *   each triangle is 3 [x, z] scene-metre vertices (not closed)
+ */
+export function computeMeshPlanTrianglesScene(model, { maxTriangles = 20000 } = {}) {
+  model.object.updateWorldMatrix(true, true);
+  const triangles = [];
+  const v = new THREE.Vector3();
+  let truncated = false;
+
+  model.object.traverse((child) => {
+    if (truncated || !child.isMesh || !child.geometry?.attributes?.position) return;
+    const pos = child.geometry.attributes.position;
+    const index = child.geometry.index;
+    const triCount = index ? index.count / 3 : pos.count / 3;
+    for (let t = 0; t < triCount; t++) {
+      if (triangles.length >= maxTriangles) {
+        truncated = true;
+        return;
+      }
+      const ring = [];
+      for (let k = 0; k < 3; k++) {
+        const i = index ? index.getX(t * 3 + k) : t * 3 + k;
+        v.set(pos.getX(i), pos.getY(i), pos.getZ(i)).applyMatrix4(child.matrixWorld);
+        ring.push([v.x, v.z]);
+      }
+      triangles.push(ring);
+    }
+  });
+
+  return { triangles, truncated };
+}

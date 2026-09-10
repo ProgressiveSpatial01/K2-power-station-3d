@@ -29,6 +29,7 @@ import {
   loadIfcFile,
   computeIfcPlacement,
   computeFootprintCornersScene,
+  computeMeshPlanTrianglesScene,
   resolveCoordinationOffset,
 } from "./ifc.js";
 import { loadTwelveDaFile, splitOnGaps, isConfirmedContinuousServiceRecord } from "./twelve-d.js";
@@ -304,6 +305,13 @@ const POINT_LAYER_ID = "ifc-design-point-layer";
 const FOOTPRINT_SOURCE_ID = "ifc-design-footprint";
 const FOOTPRINT_FILL_LAYER_ID = "ifc-design-footprint-fill";
 const FOOTPRINT_LINE_LAYER_ID = "ifc-design-footprint-line";
+// Solid shaded plan render of the actual IFC geometry (2026-09-10, per
+// Cameron) — a MultiPolygon of every projected mesh triangle. Distinct
+// source/layer from the bounding-box footprint above: both show at once
+// (the box outline as the extent, the shade as the real shape), and
+// both filter on the same checked ifcIds.
+const MESH_SOURCE_ID = "ifc-design-mesh";
+const MESH_FILL_LAYER_ID = "ifc-design-mesh-fill";
 
 /**
  * Controller for IFC design point + footprint features. Upgraded
@@ -323,6 +331,7 @@ const FOOTPRINT_LINE_LAYER_ID = "ifc-design-footprint-line";
 function createIfcFeatureController({ group }) {
   const pointFeatures = new Map(); // ifcId -> point feature
   const footprintFeatures = new Map(); // ifcId -> footprint feature (absent if geometry load failed)
+  const meshFeatures = new Map(); // ifcId -> solid-shade MultiPolygon feature (absent if geometry load failed)
   const checkedIds = new Set();
   const checkboxes = new Map();
   const subgroups = new Map(); // subgroup name -> layer-tree group, see resolveTargetGroup()
@@ -337,6 +346,9 @@ function createIfcFeatureController({ group }) {
       map.setFilter(FOOTPRINT_FILL_LAYER_ID, ["in", ["get", "ifcId"], ["literal", ids]]);
       map.setFilter(FOOTPRINT_LINE_LAYER_ID, ["in", ["get", "ifcId"], ["literal", ids]]);
     }
+    if (map.getLayer(MESH_FILL_LAYER_ID)) {
+      map.setFilter(MESH_FILL_LAYER_ID, ["in", ["get", "ifcId"], ["literal", ids]]);
+    }
   }
 
   function createLayers() {
@@ -348,17 +360,29 @@ function createIfcFeatureController({ group }) {
       type: "geojson",
       data: { type: "FeatureCollection", features: [...footprintFeatures.values()] },
     });
+    map.addSource(MESH_SOURCE_ID, {
+      type: "geojson",
+      data: { type: "FeatureCollection", features: [...meshFeatures.values()] },
+    });
     map.addLayer({
       id: FOOTPRINT_FILL_LAYER_ID,
       type: "fill",
       source: FOOTPRINT_SOURCE_ID,
-      paint: { "fill-color": "#ffb454", "fill-opacity": 0.25 },
+      paint: { "fill-color": "#ffb454", "fill-opacity": 0.12 },
+    });
+    // Solid shade of the real geometry, on top of the (now fainter)
+    // bounding-box fill.
+    map.addLayer({
+      id: MESH_FILL_LAYER_ID,
+      type: "fill",
+      source: MESH_SOURCE_ID,
+      paint: { "fill-color": "#ffb454", "fill-opacity": 0.4, "fill-outline-color": "#c97b1e" },
     });
     map.addLayer({
       id: FOOTPRINT_LINE_LAYER_ID,
       type: "line",
       source: FOOTPRINT_SOURCE_ID,
-      paint: { "line-color": "#ffb454", "line-width": 2 },
+      paint: { "line-color": "#ffb454", "line-width": 2, "line-dasharray": [2, 1] },
     });
     // Point layer added last (on top) so a design's base-point marker
     // stays visibly above its own (or any other design's) footprint fill.
@@ -401,9 +425,9 @@ function createIfcFeatureController({ group }) {
           .setLngLat(e.lngLat)
           .setHTML(
             `<b>${p.name}</b><br>` +
-              "Axis-aligned bounding-box outline (not a true footprint " +
-              "polygon for rotated/non-rectangular designs — see " +
-              "ifc.js computeFootprintCornersScene())."
+              "Shaded area is the IFC geometry projected to plan. Dashed " +
+              "line is its axis-aligned bounding box (see ifc.js " +
+              "computeFootprintCornersScene())."
           )
           .addTo(map);
       }
@@ -418,6 +442,10 @@ function createIfcFeatureController({ group }) {
         type: "FeatureCollection",
         features: [...footprintFeatures.values()],
       });
+      map.getSource(MESH_SOURCE_ID).setData({
+        type: "FeatureCollection",
+        features: [...meshFeatures.values()],
+      });
       applyFilter();
     } else {
       createLayers();
@@ -431,6 +459,7 @@ function createIfcFeatureController({ group }) {
   function removeDesign(ifcId) {
     pointFeatures.delete(ifcId);
     footprintFeatures.delete(ifcId);
+    meshFeatures.delete(ifcId);
     checkedIds.delete(ifcId);
     checkboxes.delete(ifcId);
     refreshData();
@@ -443,14 +472,20 @@ function createIfcFeatureController({ group }) {
      * @param {GeoJSON.Feature | null} footprintFeature - the bounding-box outline,
      *   null if it couldn't be computed (e.g. geometry load failed) — point-only in that case
      * @param {string} [subgroupName] - per-import manual organisation, see resolveTargetGroup()
+     * @param {GeoJSON.Feature | null} [meshFeature] - solid-shade MultiPolygon of the
+     *   real geometry projected to plan; null if geometry wasn't loaded. Appended
+     *   after subgroupName so the existing point-only callers (which pass 4 args)
+     *   don't need touching.
      */
-    setDesign(ifcId, pointFeature, footprintFeature, subgroupName) {
+    setDesign(ifcId, pointFeature, footprintFeature, subgroupName, meshFeature = null) {
       pointFeature.properties.ifcId = ifcId;
       if (footprintFeature) footprintFeature.properties.ifcId = ifcId;
+      if (meshFeature) meshFeature.properties.ifcId = ifcId;
 
       const isNew = !pointFeatures.has(ifcId);
       pointFeatures.set(ifcId, pointFeature);
       if (footprintFeature) footprintFeatures.set(ifcId, footprintFeature);
+      if (meshFeature) meshFeatures.set(ifcId, meshFeature);
       refreshData();
 
       if (isNew) {
@@ -1525,13 +1560,37 @@ async function handleIfcDesignFile(file, subgroupName, opts = {}) {
           geometry: { type: "Polygon", coordinates: [ring] },
           properties: { name: file.name },
         };
-        ifcController.setDesign(file.name, pointFeature, footprintFeature, subgroupName);
+
+        // Solid shaded plan render (2026-09-10, per Cameron: "is there
+        // anyway we can render the .ifc files on the 2D view? even just a
+        // solid shaded version") — every mesh triangle projected to plan,
+        // converted back to WGS84 the same way the bounding box is, as
+        // one MultiPolygon.
+        const { triangles: planTris, truncated } = computeMeshPlanTrianglesScene(model);
+        const meshRings = planTris.map((tri) => {
+          const triRing = tri.map(([x, z]) => mga50ToWgs84(sceneToMga([x, 0, z], localOrigin)));
+          triRing.push(triRing[0]);
+          return [triRing];
+        });
+        const meshFeature = meshRings.length
+          ? {
+              type: "Feature",
+              geometry: { type: "MultiPolygon", coordinates: meshRings },
+              properties: { name: file.name, truncated },
+            }
+          : null;
+
+        ifcController.setDesign(file.name, pointFeature, footprintFeature, subgroupName, meshFeature);
 
         setStatus(
           `Placed ${file.name} at MGA50 E${localOrigin[0].toFixed(3)} N${localOrigin[1].toFixed(3)} ` +
-            `(${crsLabel}). Footprint shown is an axis-aligned bounding-box outline, not the true ` +
-            "design shape (see ifc.js) — good enough for a rectangular, unrotated design, looser " +
-            "for anything rotated or non-rectangular."
+            `(${crsLabel}). ${
+              meshFeature
+                ? `Shaded plan render from ${planTris.length.toLocaleString()} mesh triangles` +
+                  (truncated ? " (truncated — design is very large, shade is partial)" : "") +
+                  "; dashed outline is its axis-aligned bounding box."
+                : "Footprint shown is an axis-aligned bounding-box outline, not the true design shape (see ifc.js)."
+            }`
         );
         stashDesignFile("design", file); // carries over to the 3D view — see shared-design-store.js
         if (!opts.skipSharing) await shareIfCustodian("design", file, subgroupName);

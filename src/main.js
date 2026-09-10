@@ -8,12 +8,18 @@
 import * as OBC from "@thatopen/components";
 import * as THREE from "three";
 import { getCurrentTerrain, buildTestSurfaceAbovePipes } from "./terrain.js";
-import { setupIfcLoader, loadIfcFile, extractGeoreference, computeIfcPlacement } from "./ifc.js";
+import {
+  setupIfcLoader,
+  loadIfcFile,
+  extractGeoreference,
+  computeIfcPlacement,
+  resolveCoordinationOffset,
+} from "./ifc.js";
 import { loadTwelveDaFile } from "./twelve-d.js";
 import { buildServiceMeshes } from "./services.js";
 import { buildSurfaceMeshes } from "./surfaces-3d.js";
 import { buildDesignLineworkMeshes } from "./design-linework-3d.js";
-import { roundTripCheck } from "./crs.js";
+import { roundTripCheck, mgaToScene } from "./crs.js";
 import {
   getCustodianSecret,
   setCustodianSecret,
@@ -152,6 +158,23 @@ async function handleIfcFile(file, ctx, opts = {}) {
     const { model, buffer } = await loadIfcFile(ctx.components, ctx.ifcLoader, file);
 
     const georef = extractGeoreference(buffer);
+
+    if (georef && !georef.isKnownMga50) {
+      // "K2 Plant Grid" and friends — the offset isn't a real-world
+      // coordinate (see ifc.js extractGeoreference()). The 2D page
+      // already refuses this case; 3D used to fall through to the "no
+      // georef" branch below and silently leave the model at the scene
+      // origin. Take it out of the scene rather than show it somewhere
+      // wrong. (onItemSet in ifc.js has already added it.)
+      model.object.removeFromParent();
+      console.warn("[K2-3D] Untrusted IfcMapConversion CRS, model not placed:", georef);
+      setStatus(
+        `${file.name}'s IfcMapConversion target CRS is "${georef.crsName}", not GDA2020/MGA50 — ` +
+          "not placing it without a known transform from that grid. Ask Cameron. See console."
+      );
+      return;
+    }
+
     if (georef) {
       const { position, rotationY } = computeIfcPlacement(georef, SCENE_ORIGIN_MGA);
       model.object.position.set(...position);
@@ -174,9 +197,43 @@ async function handleIfcFile(file, ctx, opts = {}) {
           "(see ifc.js computeIfcPlacement() caveat) before trusting this placement."
       );
     } else {
+      // No IFCMAPCONVERSION. Real K2 exports have been seen (e.g.
+      // "Sample IFC.ifc", GT11 Stack Foundation) with real GDA2020/MGA50
+      // coordinates baked straight into the geometry instead — web-ifc's
+      // COORDINATE_TO_ORIGIN re-centres those near the origin on load and
+      // exposes what it subtracted via the coordination matrix. The 2D
+      // page has always handled this (resolveCoordinationOffset); 3D
+      // didn't, so these files just sat at the scene origin — nowhere
+      // near their real location. That's the bug Cameron hit: "the .ifc
+      // in the 3d view is defaulting to a place away from its actual
+      // location ... loads in the correct place on the 2d view".
+      const offset = await resolveCoordinationOffset(model);
+      if (!offset.isPlausibleMga50) {
+        model.object.removeFromParent();
+        console.warn("[K2-3D] Coordination offset outside plausible MGA50 range, model not placed:", offset);
+        setStatus(
+          `${file.name} has no IFCMAPCONVERSION and its geometry's own coordinates don't look ` +
+            "like GDA2020/MGA50 either — not placing it. See console."
+        );
+        return;
+      }
+      const position = mgaToScene([offset.easting, offset.northing, offset.height], SCENE_ORIGIN_MGA);
+      model.object.position.set(...position);
+
+      const box = new THREE.Box3().setFromObject(model.object);
+      const size = new THREE.Vector3();
+      box.getSize(size);
+      console.log(
+        "[K2-3D] IFC placed from geometry coordinates (no IFCMAPCONVERSION):",
+        { offset, position },
+        "post-placement bounding box size (X,Y,Z):",
+        size.toArray()
+      );
       setStatus(
-        `Loaded ${file.name}. NO IfcMapConversion found — model sits at scene origin ` +
-          "using its own local IFC coordinates, not georeferenced."
+        `Loaded ${file.name}. No IFCMAPCONVERSION — placed from its geometry's own real-world ` +
+          `coordinates (web-ifc COORDINATE_TO_ORIGIN) at MGA50 E${offset.easting.toFixed(3)} ` +
+          `N${offset.northing.toFixed(3)}. Bounding box ${size.x.toFixed(2)} x ${size.y.toFixed(2)} x ` +
+          `${size.z.toFixed(2)} m — check it lines up with the 2D view.`
       );
     }
     registerLayer(ctx, { label: file.name, kind: "ifc", objects: [model.object] });
