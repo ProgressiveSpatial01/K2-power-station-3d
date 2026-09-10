@@ -27,6 +27,7 @@
 // data around rather than just a footprint.
 
 import * as turf from "@turf/turf";
+import { barycentric2D } from "./surface-sample.js";
 
 /** Cumulative distance (metres) from the start of `coords2d` to each vertex. */
 function cumulativeDistances(coords2d) {
@@ -93,27 +94,6 @@ function crossingsForLine(sectionCoords2d, sectionCum, feature) {
     }
   }
   return hits;
-}
-
-/**
- * Barycentric weights of 2D point `p` in triangle `(a, b, c)`, or `null`
- * if `p` is outside it (a small negative tolerance treats the boundary
- * itself as "inside", so a point sitting exactly on an edge — the usual
- * case when this is also being found as an edge crossing — doesn't get
- * dropped by float rounding).
- */
-function barycentric2D(p, a, b, c) {
-  const v0x = b[0] - a[0], v0y = b[1] - a[1];
-  const v1x = c[0] - a[0], v1y = c[1] - a[1];
-  const v2x = p[0] - a[0], v2y = p[1] - a[1];
-  const den = v0x * v1y - v1x * v0y;
-  if (Math.abs(den) < 1e-14) return null; // degenerate triangle
-  const v = (v2x * v1y - v1x * v2y) / den;
-  const w = (v0x * v2y - v2x * v0y) / den;
-  const u = 1 - v - w;
-  const eps = -1e-9;
-  if (u < eps || v < eps || w < eps) return null;
-  return { u, v, w };
 }
 
 /**

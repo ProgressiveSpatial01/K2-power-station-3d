@@ -186,6 +186,36 @@
       }
       #measure-result.active { display: block; }
 
+      /* Volume (cut/fill) tool (2026-09-11) — per Cameron: "click around
+         a stockpile or excavation with a polygon and do surface to
+         surface within, similar to propeller." Same floating-overlay
+         spot as #measure-result (never shown at the same time as it,
+         since the toolbar's tools are mutually exclusive), just wider —
+         it needs two surface pickers and a multi-line result. */
+      #volume-panel {
+        position: absolute; top: 14px; left: 112px; z-index: 5;
+        background: rgba(23,24,26,0.95); border: 1px solid #333; border-radius: 6px;
+        padding: 10px 12px; font-size: 12px; color: #ddd; display: none;
+        width: 240px;
+      }
+      #volume-panel.active { display: block; }
+      #volume-panel h3 { margin: 0 0 8px; font-size: 11px; text-transform: uppercase; letter-spacing: 0.06em; color: #8a8f98; }
+      #volume-panel label { display: block; font-size: 11px; color: #aaa; margin-top: 6px; }
+      #volume-panel select {
+        margin-top: 2px; display: block; width: 100%; box-sizing: border-box;
+        background: #17181a; border: 1px solid #3a3d42; border-radius: 4px; color: #ddd; padding: 4px 6px; font-size: 11px;
+      }
+      #volume-calculate {
+        margin-top: 10px; width: 100%; font-size: 11px; padding: 6px 0;
+        background: #2fa3ff; border: none; border-radius: 4px; color: #fff; cursor: pointer; font-weight: 600;
+      }
+      #volume-calculate:hover { background: #57b6ff; }
+      #volume-calculate:disabled { background: #3a3d42; color: #888; cursor: not-allowed; }
+      #volume-result { margin-top: 10px; font-size: 12px; line-height: 1.5; }
+      #volume-result .volume-cut { color: #ff8a65; }
+      #volume-result .volume-fill { color: #7ee7ac; }
+      #volume-result .volume-warning { color: #ffb454; font-size: 11px; margin-top: 4px; }
+
       /* Collapsible sidebar for mobile/tablet (2026-09-02, per Cameron:
          "need the sidebar to be collapsable to be viewed a little nicer
          on mobile") — desktop is untouched (sidebar stays permanently
@@ -283,10 +313,21 @@
             <button id="tool-area" title="Measure area">▱ Area</button>
             <hr />
             <button id="tool-section" title="Cut a section/profile">⛰ Section</button>
+            <button id="tool-volume" title="Cut/fill volume between two surfaces, within a drawn polygon">📐 Volume</button>
+            <button id="tool-elevation" title="Click a surface for its exact elevation">📍 Elevation</button>
             <hr />
-            <button id="tool-clear" title="Clear the current measurement/section">✕ Clear</button>
+            <button id="tool-clear" title="Clear the current measurement/section/volume">✕ Clear</button>
           </div>
           <div id="measure-result"></div>
+          <div id="volume-panel">
+            <h3>Volume (cut/fill)</h3>
+            <label for="volume-surface-a">Surface A (earlier / existing)</label>
+            <select id="volume-surface-a"></select>
+            <label for="volume-surface-b">Surface B (later / design)</label>
+            <select id="volume-surface-b"></select>
+            <button id="volume-calculate" type="button">Calculate</button>
+            <div id="volume-result"></div>
+          </div>
         </div>
         <div id="profile-pane">
           <div id="profile-header">

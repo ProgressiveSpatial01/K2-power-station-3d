@@ -39,6 +39,8 @@ import { createDrawTools } from "./draw-tools.js";
 import { renderProfileChart } from "./profile-chart.js";
 import { computeSectionCrossings, lineLengthM } from "./section-intersect.js";
 import { createSurfaceCompareControl } from "./surface-compare.js";
+import { computeVolumeWithinPolygon } from "./volume-calc.js";
+import { elevationOnSurfaceAtPoint } from "./surface-sample.js";
 import { stashDesignFile } from "./shared-design-store.js";
 import {
   getCustodianSecret,
@@ -1067,6 +1069,17 @@ function createSurfaceFeatureController({ sourceId, fillLayerId, lineLayerId, gr
       return [...knownSurfaceIds];
     },
     /**
+     * All triangles of one specific surface, regardless of its current
+     * checked/visible state — added 2026-09-11 for the elevation/volume
+     * inspection tools (surface-sample.js), which need to sample a
+     * chosen surface even if the user hasn't ticked it visible in the
+     * sidebar (unlike getVisibleFeatures(), which only ever needs
+     * "what's currently shown").
+     */
+    getFeaturesForSurface(surfaceId) {
+      return allFeatures.filter((f) => f.properties.surfaceId === surfaceId);
+    },
+    /**
      * Drives the same visibility state a sidebar checkbox would — used by
      * surface-compare.js so its A/B toggle and the individual per-surface
      * checkboxes never disagree about what's actually showing.
@@ -1677,6 +1690,8 @@ function wireMapToolbar() {
   const btnDistance = document.getElementById("tool-distance");
   const btnArea = document.getElementById("tool-area");
   const btnSection = document.getElementById("tool-section");
+  const btnVolume = document.getElementById("tool-volume");
+  const btnElevation = document.getElementById("tool-elevation");
   const btnClear = document.getElementById("tool-clear");
   const measureResultEl = document.getElementById("measure-result");
   const profilePane = document.getElementById("profile-pane");
@@ -1684,13 +1699,27 @@ function wireMapToolbar() {
   const profileChartEl = document.getElementById("profile-chart");
   const profileCloseBtn = document.getElementById("profile-close");
   const profileExpandBtn = document.getElementById("profile-expand");
+  const volumePanel = document.getElementById("volume-panel");
+  const volumeSurfaceA = document.getElementById("volume-surface-a");
+  const volumeSurfaceB = document.getElementById("volume-surface-b");
+  const volumeCalculateBtn = document.getElementById("volume-calculate");
+  const volumeResultEl = document.getElementById("volume-result");
 
-  const toolButtons = [btnDistance, btnArea, btnSection];
+  const toolButtons = [btnDistance, btnArea, btnSection, btnVolume, btnElevation];
+  // Elevation isn't a mapbox-gl-draw mode (no line/polygon to draw) —
+  // just a plain map click, toggled on/off via its own toolbar button.
+  // Tracked separately from drawToolState.active (which the elevation
+  // tool also sets true, to correctly suppress the normal feature-popup
+  // click handlers while it's on) since THIS flag specifically gates
+  // "is a click right now an elevation lookup," vs. e.g. a click that's
+  // really placing a Section/Volume vertex.
+  let elevationToolActive = false;
   function setActiveTool(activeBtn) {
     for (const b of toolButtons) b.classList.toggle("active", b === activeBtn);
     // See drawToolState's declaration (top of file) for why every
     // clickable layer's popup handler needs to know this.
     drawToolState.active = activeBtn !== null;
+    if (activeBtn !== btnElevation) elevationToolActive = false;
   }
 
   function showMeasureResult(text) {
@@ -1785,26 +1814,109 @@ function wireMapToolbar() {
         profileSummaryEl.textContent = `Failed to build profile while ${stage}: ${err.message}`;
       }
     },
+    onVolumePolygon: (polygonCoordsWgs84) => {
+      setActiveTool(null); // volume is single-shot; drawing is done
+      showMeasureResult("");
+      volumeResultEl.innerHTML = "";
+      populateVolumeSurfaceOptions();
+      volumePanel.classList.add("active");
+      pendingVolumePolygon = polygonCoordsWgs84;
+    },
+  });
+
+  /** (Re)fills the two surface pickers with every surface loaded so far — called fresh each time the panel opens, so a surface added mid-session still shows up. */
+  function populateVolumeSurfaceOptions() {
+    const ids = designSurfaceController.getKnownSurfaceIds();
+    for (const select of [volumeSurfaceA, volumeSurfaceB]) {
+      const prevValue = select.value;
+      select.innerHTML = "";
+      for (const id of ids) {
+        const opt = document.createElement("option");
+        opt.value = id;
+        opt.textContent = id;
+        select.appendChild(opt);
+      }
+      if (ids.includes(prevValue)) select.value = prevValue;
+    }
+    // Default to the two most-recently-loaded surfaces, same convention
+    // as surface-compare.js's A/B toggle — the common case (comparing
+    // this month's flight against last month's) is usually the two
+    // newest, not the two alphabetically first.
+    if (ids.length > 1 && volumeSurfaceA.value === volumeSurfaceB.value) {
+      volumeSurfaceA.value = ids[ids.length - 2];
+      volumeSurfaceB.value = ids[ids.length - 1];
+    }
+    volumeCalculateBtn.disabled = ids.length < 2;
+  }
+
+  let pendingVolumePolygon = null;
+  volumeCalculateBtn.addEventListener("click", () => {
+    if (!pendingVolumePolygon) return;
+    const idA = volumeSurfaceA.value;
+    const idB = volumeSurfaceB.value;
+    if (!idA || !idB) return;
+    if (idA === idB) {
+      volumeResultEl.innerHTML = `<p class="volume-warning">Pick two different surfaces.</p>`;
+      return;
+    }
+    const featuresA = designSurfaceController.getFeaturesForSurface(idA);
+    const featuresB = designSurfaceController.getFeaturesForSurface(idB);
+    const result = computeVolumeWithinPolygon(pendingVolumePolygon, featuresA, featuresB);
+    const areaLabel =
+      result.polygonAreaM2 < 10000
+        ? `${result.polygonAreaM2.toFixed(1)} m²`
+        : `${(result.polygonAreaM2 / 10000).toFixed(3)} ha`;
+    volumeResultEl.innerHTML =
+      `<div class="volume-cut">Cut: ${result.cutVolumeM3.toFixed(1)} m³</div>` +
+      `<div class="volume-fill">Fill: ${result.fillVolumeM3.toFixed(1)} m³</div>` +
+      `<div>Net: ${result.netVolumeM3 >= 0 ? "+" : ""}${result.netVolumeM3.toFixed(1)} m³ ` +
+      `(${result.netVolumeM3 >= 0 ? "fill" : "cut"})</div>` +
+      `<div>Area: ${areaLabel}</div>` +
+      (result.coveragePct < 95
+        ? `<div class="volume-warning">Only ${result.coveragePct.toFixed(0)}% of the polygon has data on both ` +
+          `surfaces — the rest (outside at least one survey's extent) isn't counted above.</div>`
+        : "");
   });
 
   btnDistance.addEventListener("click", () => {
     setActiveTool(btnDistance);
     closeProfilePaneKeepingTool();
+    volumePanel.classList.remove("active");
     tools.startDistance();
   });
   btnArea.addEventListener("click", () => {
     setActiveTool(btnArea);
     closeProfilePaneKeepingTool();
+    volumePanel.classList.remove("active");
     tools.startArea();
   });
   btnSection.addEventListener("click", () => {
     setActiveTool(btnSection);
     showMeasureResult("");
+    volumePanel.classList.remove("active");
     tools.startSection();
+  });
+  btnVolume.addEventListener("click", () => {
+    setActiveTool(btnVolume);
+    closeProfilePaneKeepingTool();
+    showMeasureResult("");
+    volumePanel.classList.remove("active"); // reappears once a polygon's actually drawn — see onVolumePolygon above
+    tools.startVolume();
+  });
+  btnElevation.addEventListener("click", () => {
+    const turningOn = !elevationToolActive;
+    setActiveTool(turningOn ? btnElevation : null);
+    elevationToolActive = turningOn;
+    closeProfilePaneKeepingTool();
+    volumePanel.classList.remove("active");
+    tools.stop(); // no in-progress draw of its own, but stop() also tears down mapbox-gl-draw's control if nothing else needs it
   });
   btnClear.addEventListener("click", () => {
     tools.clear();
     closeProfilePane();
+    volumePanel.classList.remove("active");
+    pendingVolumePolygon = null;
+    elevationToolActive = false;
   });
   profileCloseBtn.addEventListener("click", () => {
     tools.stop();
@@ -1823,4 +1935,36 @@ function wireMapToolbar() {
     profilePane.classList.remove("active");
     afterPaneToggle();
   }
+
+  // Spot elevation — click a surface for its exact interpolated RL,
+  // added 2026-09-11 alongside the volume tool per Cameron: "is there
+  // some simple inspection tools we can add." Generic (non-layer-scoped)
+  // click, same pattern as the popup click handlers elsewhere in this
+  // file — gated on elevationToolActive rather than drawToolState.active
+  // directly, since that flag is shared with every OTHER active tool too
+  // (see elevationToolActive's declaration above).
+  map.on("click", (e) => {
+    if (!elevationToolActive) return;
+    const visible = designSurfaceController.getVisibleFeatures();
+    const bySurface = new Map();
+    for (const f of visible) {
+      const id = f.properties.surfaceId;
+      if (!bySurface.has(id)) bySurface.set(id, []);
+      bySurface.get(id).push(f);
+    }
+    const point = [e.lngLat.lng, e.lngLat.lat];
+    const results = [];
+    for (const [id, features] of bySurface) {
+      const z = elevationOnSurfaceAtPoint(point, features);
+      if (z != null) results.push({ id, z });
+    }
+    const html =
+      results.length === 0
+        ? "<i>No visible surface has data at this point.</i>"
+        : results.map((r) => `<b>${r.id}</b>: RL ${r.z.toFixed(3)} AHD`).join("<br>") +
+          (results.length === 2
+            ? `<br><br>Δ (2nd − 1st): ${results[1].z - results[0].z >= 0 ? "+" : ""}${(results[1].z - results[0].z).toFixed(3)} m`
+            : "");
+    new mapboxgl.Popup().setLngLat(e.lngLat).setHTML(html).addTo(map);
+  });
 }

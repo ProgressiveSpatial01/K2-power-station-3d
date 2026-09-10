@@ -23,12 +23,13 @@ import * as turf from "@turf/turf";
  * @param {{
  *   onMeasureResult: (text: string) => void,
  *   onSectionLine: (lineCoordsWgs84: Array<[number, number]>) => void,
+ *   onVolumePolygon: (polygonCoordsWgs84: Array<[number, number]>) => void,
  * }} handlers
  */
-export function createDrawTools(map, { onMeasureResult, onSectionLine }) {
+export function createDrawTools(map, { onMeasureResult, onSectionLine, onVolumePolygon }) {
   const draw = new MapboxDraw({ displayControlsDefault: false, controls: {} });
 
-  let mode = null; // "distance" | "area" | "section" | null
+  let mode = null; // "distance" | "area" | "section" | "volume" | null
   // Added 2026-09-03, per Cameron (Android Chrome): "clicking on the map
   // features doesn't seem to register" — literally nothing happened on
   // tap (not even a misread drag), yet one-finger pan/pinch-zoom worked
@@ -123,6 +124,15 @@ export function createDrawTools(map, { onMeasureResult, onSectionLine }) {
       draw.changeMode("simple_select");
       onSectionLine(coords);
       removeControlIfIdle(); // mode is null again now — see its definition above
+    } else if (mode === "volume" && last.geometry.type === "Polygon") {
+      // Same single-shot pattern and same reset-before-changeMode
+      // ordering as the "section" branch above — see its comment for
+      // why (the mapbox-gl-draw re-entrancy this avoids).
+      const coords = last.geometry.coordinates[0];
+      mode = null;
+      draw.changeMode("simple_select");
+      onVolumePolygon(coords);
+      removeControlIfIdle();
     }
   }
 
@@ -152,6 +162,12 @@ export function createDrawTools(map, { onMeasureResult, onSectionLine }) {
       draw.deleteAll();
       mode = "section";
       draw.changeMode("draw_line_string");
+    },
+    startVolume() {
+      ensureControlAdded();
+      draw.deleteAll();
+      mode = "volume";
+      draw.changeMode("draw_polygon");
     },
     clear() {
       // controlAdded can be false here (idle already, nothing to clear —
