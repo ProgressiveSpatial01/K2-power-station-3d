@@ -77,11 +77,64 @@ async function main() {
   const { ifcLoader } = await setupIfcLoader(components, world);
   setStatus("Ready — choose a design (.ifc/.12da/.12daz) and/or a .12da/.12daz services file.");
 
-  const ctx = { components, ifcLoader, world, terrainState };
+  const ctx = { components, ifcLoader, world, terrainState, layers: [] };
   wireDesignInput(ctx);
   wireServicesInput(ctx);
   wireCustodianMode();
   await loadSharedFiles(ctx);
+}
+
+// --- Layers panel (2026-09-10) --------------------------------------
+//
+// Per Cameron: "probably need the ability to toggle layers on and off
+// in the 3d view" — previously everything loaded just piled into the
+// scene with no way to isolate anything. One row per loaded FILE (not
+// a full nested per-model-path tree like the 2D sidebar's — that's a
+// materially bigger feature; this is the useful middle ground: hide
+// "that one services upload" or "that one surface" without digging
+// through the whole scene). A design file that contains BOTH surfaces
+// and linework registers as two separate rows, since they're toggled
+// independently.
+//
+// `objects` holds whatever THREE.Object3D(s) this layer's checkbox
+// should show/hide — for a services/surfaces/linework Group, `.visible`
+// cascades to every descendant automatically; for an IFC model there's
+// no wrapping group (see ifc.js's onItemSet — it adds model.object
+// straight to the scene), so the model's own object goes in the array
+// directly. No terrain toggle: terrainState.mesh gets fully replaced
+// (old one disposed) whenever a services file loads — see
+// handleServicesFile() — so a captured reference to it would go stale
+// the moment that happens.
+
+function registerLayer(ctx, { label, kind, objects }) {
+  ctx.layers.push({ label, kind, objects, visible: true });
+  renderLayersList(ctx);
+}
+
+function renderLayersList(ctx) {
+  const container = document.getElementById("layers-list");
+  if (ctx.layers.length === 0) {
+    container.innerHTML = `<p class="shared-files-empty">Nothing loaded yet.</p>`;
+    return;
+  }
+  container.innerHTML = "";
+  for (const layer of ctx.layers) {
+    const row = document.createElement("label");
+    row.className = "layer-row";
+    const checkbox = document.createElement("input");
+    checkbox.type = "checkbox";
+    checkbox.checked = layer.visible;
+    checkbox.addEventListener("change", () => {
+      layer.visible = checkbox.checked;
+      for (const obj of layer.objects) obj.visible = layer.visible;
+    });
+    const nameEl = document.createElement("span");
+    nameEl.className = "layer-row-label";
+    nameEl.textContent = layer.label;
+    nameEl.title = layer.label;
+    row.append(checkbox, nameEl);
+    container.appendChild(row);
+  }
 }
 
 /**
@@ -126,6 +179,7 @@ async function handleIfcFile(file, ctx, opts = {}) {
           "using its own local IFC coordinates, not georeferenced."
       );
     }
+    registerLayer(ctx, { label: file.name, kind: "ifc", objects: [model.object] });
     if (!opts.skipSharing) await shareIfCustodian("design", file, null);
   } catch (err) {
     console.error(err);
@@ -165,6 +219,7 @@ async function handleDesign12dFile(file, ctx, opts = {}) {
     if (hasSurfaces) {
       const { group, excludedScaffold } = buildSurfaceMeshes(records.surfaces, SCENE_ORIGIN_MGA, file.name);
       ctx.world.scene.three.add(group);
+      registerLayer(ctx, { label: `${file.name} — surfaces`, kind: "surfaces", objects: [group] });
       messages.push(
         `${records.surfaces.length} surface(s) added` +
           (excludedScaffold > 0 ? ` (${excludedScaffold} scaffold triangle(s) excluded, see console)` : "")
@@ -173,6 +228,7 @@ async function handleDesign12dFile(file, ctx, opts = {}) {
     if (hasLinework) {
       const { group, skippedShort } = buildDesignLineworkMeshes(records, SCENE_ORIGIN_MGA);
       ctx.world.scene.three.add(group);
+      registerLayer(ctx, { label: `${file.name} — linework`, kind: "linework", objects: [group] });
       messages.push(
         `${records.length - skippedShort} design linework string(s) added` +
           (skippedShort > 0 ? ` (${skippedShort} point/symbol record(s) skipped)` : "")
@@ -217,6 +273,7 @@ async function handleServicesFile(file, ctx, opts = {}) {
     console.log("[K2-3D] Parsed 12d records:", records);
     const group = buildServiceMeshes(records, SCENE_ORIGIN_MGA);
     ctx.world.scene.three.add(group);
+    registerLayer(ctx, { label: file.name, kind: "services", objects: [group] });
 
     // TEST-ONLY, per Cameron (2026-08-24): swap the terrain reference
     // plane for one sitting ~0.9m above the loaded pipes' top-of-pipe

@@ -52,6 +52,20 @@
         padding: 1px 6px; cursor: pointer; font-size: 11px;
       }
       .shared-file-row .shared-file-delete:hover { color: #fff; border-color: #d9534f; }
+
+      /* Layers panel (2026-09-10) — same row shape as index.html's
+         sidebar layer tree, minus the grouping/rename/delete affordances
+         this simpler flat list doesn't have. */
+      .layer-row {
+        display: flex; align-items: center; gap: 6px;
+        padding: 3px 2px; font-size: 12px; color: #cfd2d6; cursor: pointer;
+        min-width: 0;
+      }
+      .layer-row:hover { color: #fff; }
+      .layer-row input[type="checkbox"] { flex-shrink: 0; }
+      .layer-row .layer-row-label {
+        white-space: nowrap; overflow: hidden; text-overflow: ellipsis; min-width: 0;
+      }
     </style>
   </head>
   <body>
@@ -75,6 +89,13 @@
           <input id="design-input" type="file" accept=".ifc,.12da,.12daz" />
           <label for="services-input">12d services (.12da / .12daz)</label>
           <input id="services-input" type="file" accept=".12da,.12daz" />
+        </div>
+
+        <div class="hud-section">
+          <h2>Layers</h2>
+          <div id="layers-list">
+            <p class="shared-files-empty">Nothing loaded yet.</p>
+          </div>
         </div>
       </div>
     </div>
