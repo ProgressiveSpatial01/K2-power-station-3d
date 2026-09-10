@@ -33,6 +33,9 @@
  *     name: string, model: string, colour: string }>,
  *   surfaceChords?: Array<{ points: Array<{distanceM: number, elevationAhd: number}>,
  *     surfaceName: string, colour: string }>,
+ *   hiddenSurfaceNames?: Set<string>,  // surfaces present in surfaceChords but
+ *     // starting hidden — the in-chart checkboxes still list them, unticked,
+ *     // so they can be toggled on without redrawing the section
  * }} [overlays] - real design/services crossings along the cut line, from
  *   section-intersect.js.
  */
@@ -56,7 +59,12 @@ export function renderProfileChart(container, { totalDistanceM }, overlays = {})
 }
 
 function renderProfileChartInner(container, { totalDistanceM }, overlays, setStep) {
-  const { lineCrossings = [], surfaceChords = [] } = overlays;
+  const { lineCrossings = [], surfaceChords = [], hiddenSurfaceNames = new Set() } = overlays;
+  // Live set of surface names currently toggled OFF in the chart — seeded
+  // from hiddenSurfaceNames, then mutated by the per-surface checkboxes
+  // below and read (live) by both the chord `display` toggling and the
+  // live-snap tool, so no redraw is needed to add/remove a surface.
+  const hiddenSurfaces = new Set(hiddenSurfaceNames);
   const width = 640;
   const height = 320;
   const margin = { top: 16, right: 16, bottom: 32, left: 56 };
@@ -136,7 +144,12 @@ function renderProfileChartInner(container, { totalDistanceM }, overlays, setSte
       const d = chord.points
         .map((p, i) => `${i === 0 ? "M" : "L"} ${x(p.distanceM).toFixed(1)} ${y(p.elevationAhd).toFixed(1)}`)
         .join(" ");
-      return `<path d="${d}" fill="none" stroke="${chord.colour}" stroke-width="3"><title>${escapeXml(chord.surfaceName)}</title></path>`;
+      const hidden = hiddenSurfaces.has(chord.surfaceName);
+      return (
+        `<path class="surface-chord" data-surface="${escapeXml(chord.surfaceName)}" d="${d}" ` +
+        `fill="none" stroke="${chord.colour}" stroke-width="3"${hidden ? ' style="display:none"' : ""}>` +
+        `<title>${escapeXml(chord.surfaceName)}</title></path>`
+      );
     })
     .join("");
 
@@ -157,6 +170,31 @@ function renderProfileChartInner(container, { totalDistanceM }, overlays, setSte
     })
     .join("");
 
+  setStep("building surface toggle row");
+  // One checkbox per distinct surface crossed — flip a surface's chord(s)
+  // in/out without recomputing the section (2026-09-11, per Cameron: "the
+  // ability to toggle layers on and off in the section view ... just the
+  // surfaces that can be toggled"). Order matches the chords / snap
+  // dropdown (first-seen = upload order).
+  const surfaceNamesForToggle = [...new Set(surfaceChords.map((c) => c.surfaceName))];
+  const surfaceToggleRow = surfaceNamesForToggle.length
+    ? `<div class="surface-toggle-row" style="display:flex; flex-wrap:wrap; gap:5px 14px; margin:8px 2px 0; align-items:center;">
+        <span style="font-size:10px; text-transform:uppercase; letter-spacing:0.06em; color:#8a8f98;">Surfaces</span>
+        ${surfaceNamesForToggle
+          .map((name) => {
+            const colour = surfaceChords.find((c) => c.surfaceName === name)?.colour ?? "#2ee6c8";
+            const checked = hiddenSurfaces.has(name) ? "" : "checked";
+            return (
+              `<label style="display:inline-flex; align-items:center; gap:4px; font-size:11px; color:#ccc; cursor:pointer;">` +
+              `<input type="checkbox" class="surface-toggle" data-surface="${escapeXml(name)}" ${checked} />` +
+              `<span style="width:9px; height:9px; border-radius:2px; background:${colour}; flex-shrink:0;"></span>` +
+              `<span>${escapeXml(name)}</span></label>`
+            );
+          })
+          .join("")}
+      </div>`
+    : "";
+
   setStep("building legend HTML");
   const legend = legendHtml(lineCrossings, surfaceChords);
 
@@ -176,6 +214,7 @@ function renderProfileChartInner(container, { totalDistanceM }, overlays, setSte
       </g>
       <rect class="snap-capture" x="${margin.left}" y="${margin.top}" width="${plotW}" height="${plotH}" fill="transparent" />
     </svg>
+    ${surfaceToggleRow}
     <div class="snap-mode-toggle" style="display:flex; gap:6px; margin:6px 2px 0;">
       <button type="button" data-mode="surface-service" style="flex:1; font-size:11px; padding:4px 0; border-radius:4px; border:1px solid #2fa3ff; background:#2fa3ff; color:#fff; cursor:pointer;">Surface ↔ Pipe</button>
       <button type="button" data-mode="service-service" style="flex:1; font-size:11px; padding:4px 0; border-radius:4px; border:1px solid #444; background:#111; color:#ccc; cursor:pointer;">Pipe ↔ Pipe</button>
@@ -192,7 +231,32 @@ function renderProfileChartInner(container, { totalDistanceM }, overlays, setSte
   `;
 
   setStep("wiring the live snap");
-  wireLiveSnap(container, { x, y, distanceAtX, margin, plotH, lineCrossings, surfaceChords });
+  const snap = wireLiveSnap(container, {
+    x,
+    y,
+    distanceAtX,
+    margin,
+    plotH,
+    lineCrossings,
+    surfaceChords,
+    hiddenSurfaces,
+  });
+
+  setStep("wiring the surface toggles");
+  const chordPaths = [...container.querySelectorAll("path.surface-chord")];
+  for (const cb of container.querySelectorAll(".surface-toggle")) {
+    cb.addEventListener("change", () => {
+      const name = cb.dataset.surface;
+      if (cb.checked) hiddenSurfaces.delete(name);
+      else hiddenSurfaces.add(name);
+      for (const path of chordPaths) {
+        if (path.dataset.surface === name) path.style.display = cb.checked ? "" : "none";
+      }
+      // Keep the live-snap surface pickers in step — a hidden surface
+      // shouldn't be selectable to snap against.
+      snap?.refreshSurfaceOptions();
+    });
+  }
 }
 
 /**
@@ -230,7 +294,10 @@ function renderProfileChartInner(container, { totalDistanceM }, overlays, setSte
  * is exact, not an approximation), and 3D distance (straight-line
  * distance accounting for both).
  */
-function wireLiveSnap(container, { x, y, distanceAtX, margin, plotH, lineCrossings, surfaceChords }) {
+function wireLiveSnap(
+  container,
+  { x, y, distanceAtX, margin, plotH, lineCrossings, surfaceChords, hiddenSurfaces = new Set() }
+) {
   const svg = container.querySelector("svg");
   const captureRect = container.querySelector(".snap-capture");
   const liveGroup = container.querySelector(".live-snap");
@@ -249,20 +316,33 @@ function wireLiveSnap(container, { x, y, distanceAtX, margin, plotH, lineCrossin
   let mode = "surface-service";
 
   // Every distinct surface name present, in first-seen order (matches
-  // section-intersect.js's chord order, which follows upload order) —
-  // used to populate the surface-picker dropdown(s).
-  const surfaceNames = [...new Set(surfaceChords.map((c) => c.surfaceName))];
-  for (const select of [selectA, selectB]) {
-    select.replaceChildren(
-      ...surfaceNames.map((name) => {
-        const opt = document.createElement("option");
-        opt.value = name;
-        opt.textContent = name;
-        return opt;
-      })
-    );
+  // section-intersect.js's chord order, which follows upload order).
+  const allSurfaceNames = [...new Set(surfaceChords.map((c) => c.surfaceName))];
+
+  // The snap pickers only ever list surfaces currently toggled ON in the
+  // chart (see the surface-toggle checkboxes) — snapping against a hidden
+  // surface would be surprising. Rebuilt whenever a toggle changes, via
+  // the returned refreshSurfaceOptions(); keeps each pick if still valid.
+  function refreshSurfaceOptions() {
+    const visibleNames = allSurfaceNames.filter((n) => !hiddenSurfaces.has(n));
+    for (const select of [selectA, selectB]) {
+      const prev = select.value;
+      select.replaceChildren(
+        ...visibleNames.map((name) => {
+          const opt = document.createElement("option");
+          opt.value = name;
+          opt.textContent = name;
+          return opt;
+        })
+      );
+      if (visibleNames.includes(prev)) select.value = prev;
+    }
+    // Prefer A and B pointing at different surfaces when there's a choice.
+    if (visibleNames.length > 1 && selectB.value === selectA.value) {
+      selectB.value = visibleNames.find((n) => n !== selectA.value) ?? selectB.value;
+    }
   }
-  if (surfaceNames.length > 1) selectB.value = surfaceNames[1];
+  refreshSurfaceOptions();
 
   function updateModeButtonStyles() {
     for (const btn of modeButtons) {
@@ -299,6 +379,7 @@ function wireLiveSnap(container, { x, y, distanceAtX, margin, plotH, lineCrossin
   function elevationOnSurfaceAt(distanceM, surfaceName) {
     for (const chord of surfaceChords) {
       if (surfaceName != null && chord.surfaceName !== surfaceName) continue;
+      if (hiddenSurfaces.has(chord.surfaceName)) continue; // toggled off in the chart
       const pts = chord.points;
       if (distanceM < pts[0].distanceM || distanceM > pts[pts.length - 1].distanceM) continue;
       for (let i = 0; i < pts.length - 1; i++) {
@@ -419,6 +500,8 @@ function wireLiveSnap(container, { x, y, distanceAtX, margin, plotH, lineCrossin
 
   captureRect.addEventListener("mousemove", onMove);
   captureRect.addEventListener("mouseleave", onLeave);
+
+  return { refreshSurfaceOptions };
 }
 
 /**

@@ -1023,12 +1023,17 @@ function createSurfaceFeatureController({ sourceId, fillLayerId, lineLayerId, gr
       const id = f.properties.surfaceId;
       if (knownSurfaceIds.has(id)) continue;
       knownSurfaceIds.add(id);
-      checkedSurfaces.add(id);
+      // Surfaces load OFF by default (2026-09-11, per Cameron: "on load
+      // up ... have all the surfaces default turned off initially, it
+      // just gets a little too messy") — a stack of overlapping dated
+      // drone-flight surfaces all painted at once is unreadable. The
+      // user ticks the one(s) they want; the section view has its own
+      // in-view surface toggles too (see wireMapToolbar()'s onSectionLine).
       added = true;
       const input = targetGroup.addRow({
         label: id,
         color: f.properties.colour,
-        checked: true,
+        checked: false,
         onChange: (checked) => {
           if (checked) checkedSurfaces.add(id);
           else checkedSurfaces.delete(id);
@@ -1871,42 +1876,62 @@ function wireMapToolbar() {
           ...servicesController.getVisibleFeatures(),
           ...designLineworkController.getVisibleFeatures(),
         ];
-        const visibleSurfaceFeatures = designSurfaceController.getVisibleFeatures();
+        // Surfaces: feed EVERY loaded surface into the section, not just
+        // the sidebar-checked ones (2026-09-11, per Cameron: "the ability
+        // to toggle layers on and off in the section view, particularly
+        // the surfaces"). The chart gets its own per-surface checkboxes;
+        // they start matching each surface's current sidebar visibility
+        // (so the section respects "surfaces load off" — see
+        // createSurfaceFeatureController — but you can flip any of them on
+        // right there in the section view without going back to the map).
+        const allSurfaceIds = designSurfaceController.getKnownSurfaceIds();
+        const sidebarVisibleSurfaceIds = new Set(
+          designSurfaceController.getVisibleFeatures().map((f) => f.properties.surfaceId)
+        );
+        const allSurfaceFeatures = allSurfaceIds.flatMap((id) =>
+          designSurfaceController.getFeaturesForSurface(id)
+        );
+        const hiddenSurfaceNames = new Set(
+          allSurfaceIds.filter((id) => !sidebarVisibleSurfaceIds.has(id))
+        );
 
         stage = `computing line length (line has ${lineCoordsWgs84.length} point(s))`;
         const totalDistanceM = lineLengthM(lineCoordsWgs84);
 
-        // Cut-line crossings against whatever's currently checked "on" in
-        // the sidebar — services, design linework, design surfaces (added
-        // 2026-08-26 per Cameron: "need to be able to see these layers on
-        // the section view as well"). NOT the IFC design layer — see
-        // section-intersect.js's header for why (only a bounding-box
+        // Cut-line crossings against currently-checked services/design
+        // linework (added 2026-08-26 per Cameron: "need to be able to see
+        // these layers on the section view as well") plus every loaded
+        // surface (toggled in-chart, see above). NOT the IFC design layer
+        // — see section-intersect.js's header for why (only a bounding-box
         // footprint is tracked in 2D, not real geometry to intersect).
         // No terrain sampling any more either — removed the same day per
         // Cameron: "the mapbox terrain should be removed, it doesn't
         // really do anything relevant" (see README "Terrain").
         stage =
           `computing crossings (${visibleLineFeatures.length} visible line feature(s), ` +
-          `${visibleSurfaceFeatures.length} visible surface triangle(s))`;
+          `${allSurfaceFeatures.length} surface triangle(s) across ${allSurfaceIds.length} surface(s))`;
         const crossings = computeSectionCrossings(lineCoordsWgs84, {
           lineFeatures: visibleLineFeatures,
-          surfaceFeatures: visibleSurfaceFeatures,
+          surfaceFeatures: allSurfaceFeatures,
         });
 
-        const crossingCount = crossings.lineCrossings.length + crossings.surfaceChords.length;
+        const shownSurfaceChords = crossings.surfaceChords.filter(
+          (c) => !hiddenSurfaceNames.has(c.surfaceName)
+        );
+        const crossingCount = crossings.lineCrossings.length + shownSurfaceChords.length;
         profileSummaryEl.textContent =
           `Length: ${totalDistanceM.toFixed(1)} m. ` +
-          (crossingCount > 0
+          (crossings.lineCrossings.length > 0 || crossings.surfaceChords.length > 0
             ? `${crossings.lineCrossings.length} service/linework crossing(s) and ` +
-              `${crossings.surfaceChords.length} surface segment(s) shown below, at real surveyed/` +
-              "design elevation — drag across the chart for a live surface↔service delta height. " +
-              "IFC design geometry isn't intersected yet (only its footprint is tracked in 2D)."
-            : "No currently-visible service/linework/surface layer crosses this line.");
+              `${shownSurfaceChords.length} of ${crossings.surfaceChords.length} surface segment(s) shown below ` +
+              "(tick surfaces on/off under the chart), at real surveyed/design elevation — drag across the " +
+              "chart for a live surface↔service delta height. IFC design geometry isn't intersected yet."
+            : "No service/linework crossing and no loaded surface crosses this line.");
 
         stage =
           `rendering the chart (${crossings.lineCrossings.length} line crossing(s), ` +
           `${crossings.surfaceChords.length} surface chord(s))`;
-        renderProfileChart(profileChartEl, { totalDistanceM }, crossings);
+        renderProfileChart(profileChartEl, { totalDistanceM }, { ...crossings, hiddenSurfaceNames });
       } catch (err) {
         console.error(`[K2-2D] Section profile failed while ${stage}:`, err);
         profileSummaryEl.textContent = `Failed to build profile while ${stage}: ${err.message}`;

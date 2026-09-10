@@ -123,7 +123,12 @@ export function createSurfaceCompareControl(container, { setSurfaceVisible }) {
       // for "this month vs last month".
       selectA.value = ids.includes(prevA) ? prevA : ids[ids.length - 2];
       selectB.value = ids.includes(prevB) ? prevB : ids[ids.length - 1];
-      applyState();
+      // NOT applyState() here any more (2026-09-11): surfaces now load
+      // OFF by default (per Cameron, see createSurfaceFeatureController()
+      // in main-2d.js), so auto-showing the A/B pair the moment this
+      // control appears would fight that "start clean" intent. The
+      // buttons/dropdowns still call applyState() on interaction — the
+      // control just no longer forces two surfaces visible unprompted.
     },
   };
 }
