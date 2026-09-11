@@ -652,33 +652,47 @@ function splitOnWorstOutlier(points, absoluteThresholdM, relativeMultiplier) {
 // list only on that kind of explicit per-case confirmation, never by
 // inference from how a name reads.
 //
-// Keyed on model|name|firstPointE,firstPointN (E/N rounded to the
-// nearest metre) rather than just model|name — added 2026-09-09 when
-// "POWER UG LV PIPE 50" turned out to label 95 separate real conduits
-// scattered across the whole site (easting 384794-384934), not one
-// alignment; a model+name-only key would have wrongly exempted all 95
-// instead of just the one Cameron actually confirmed.
+// Keyed on name|firstPointE,firstPointN (E/N rounded to the nearest
+// metre) rather than just name — added 2026-09-09 when "POWER UG LV
+// PIPE 50" turned out to label 95 separate real conduits scattered
+// across the whole site (easting 384794-384934), not one alignment; a
+// name-only key would have wrongly exempted all 95 instead of just the
+// one Cameron actually confirmed.
 //
-// - "...Services/Asbuilt/Fire Suppression" / "Fire Suppression" @
-//   (384921,6433997) — added 2026-09-09: Cameron's 12d screenshot
-//   showed one continuous run where the map showed it fragmented. Its
-//   real 37-point record mixes tiny joint spacing (0.1-0.9m) with
-//   several genuine 3-8.7m survey-chainage legs — splitOnGaps()
-//   misread those as feature boundaries, same failure mode as the
-//   original design fire water case.
-// - "...Services/Loc/Power/Low Voltage" / "POWER UG LV PIPE 50" @
-//   (384882,6434095) — added 2026-09-09, same session: Cameron's 12d
-//   screenshot again showed a continuous LV run at this exact spot
-//   (matches the fire suppression cluster's NW-corner location) where
-//   the map showed a gap. Real 12-point record mixes small local jogs
-//   (<2m) with four genuine 5-15m legs; splitOnGaps() cut it into
-//   [5,1,1,1,4] — three of those five pieces single points, invisible.
-//   Two near-duplicate records exist at this same coordinate (survey
-//   re-shot the same conduit ~0.1m apart) — both covered by the same
-//   rounded-coordinate key.
+// NOT model-qualified any more (was model|name|coord until 2026-09-12)
+// — dropped after the exact same two confirmed LV records reappeared
+// fragmented in "260911 Service Upload.12daz" despite nothing about the
+// physical data changing. Root cause: the model PATH TEXT for this
+// group changed between weekly exports — "...Services/Loc/Power/Low
+// Voltage" (260909) became "...Services/Located/Power/Low Voltage"
+// (260911), same 543 records, same coordinates, just a renamed/re-
+// expanded 12d model folder — and the old model-qualified key silently
+// stopped matching. The coordinate + name pair was already doing all
+// the real discriminating work (this LV pipe name only ever appears
+// within this one model group anyway); the model segment added no
+// safety, only fragility to a cosmetic rename. If a future export ever
+// reuses this exact name+coordinate for a genuinely different service,
+// revisit — but that's a far rarer collision than a model path being
+// re-worded again.
+//
+// - "Fire Suppression" @ (384921,6433997) — added 2026-09-09: Cameron's
+//   12d screenshot showed one continuous run where the map showed it
+//   fragmented. Its real 37-point record mixes tiny joint spacing
+//   (0.1-0.9m) with several genuine 3-8.7m survey-chainage legs —
+//   splitOnGaps() misread those as feature boundaries, same failure
+//   mode as the original design fire water case.
+// - "POWER UG LV PIPE 50" @ (384882,6434095) — added 2026-09-09, same
+//   session: Cameron's 12d screenshot again showed a continuous LV run
+//   at this exact spot (matches the fire suppression cluster's NW-
+//   corner location) where the map showed a gap. Real 12-point record
+//   mixes small local jogs (<2m) with four genuine 5-15m legs —
+//   splitOnGaps() cut it into [5,1,1,1,4], three of those five pieces
+//   single points, invisible. Two near-duplicate records exist at this
+//   same coordinate (survey re-shot the same conduit ~0.1m apart) —
+//   both covered by the same rounded-coordinate key.
 const CONFIRMED_CONTINUOUS_SERVICE_RECORDS = new Set([
-  "04 K2 Power Station/Services/Asbuilt/Fire Suppression|Fire Suppression|384921,6433997",
-  "04 K2 Power Station/Services/Loc/Power/Low Voltage|POWER UG LV PIPE 50|384882,6434095",
+  "Fire Suppression|384921,6433997",
+  "POWER UG LV PIPE 50|384882,6434095",
 ]);
 
 /**
@@ -691,5 +705,5 @@ export function isConfirmedContinuousServiceRecord(record) {
   const [firstE, firstN] = record.centrelinePoints[0] ?? [];
   if (firstE == null) return false;
   const coordKey = `${Math.round(firstE)},${Math.round(firstN)}`;
-  return CONFIRMED_CONTINUOUS_SERVICE_RECORDS.has(`${record.model}|${record.name}|${coordKey}`);
+  return CONFIRMED_CONTINUOUS_SERVICE_RECORDS.has(`${record.name}|${coordKey}`);
 }
