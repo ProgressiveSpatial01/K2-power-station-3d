@@ -54,11 +54,36 @@ export async function fetchSharedFile(entry) {
   return new File([blob], entry.name, { type: blob.type });
 }
 
+// Vercel's serverless functions cap the request body at 4.5MB regardless
+// of plan (see api/shared-upload.js's header) — base64 inflates a raw
+// file by ~4/3, so anything much past ~3MB raw risks landing on the
+// wrong side of that even before the small JSON scaffolding around it.
+// Checked BEFORE reading/encoding the file at all (2026-09-16, per
+// Cameron uploading a real 84MB IFC and finding it "loads fine but I
+// lose it on a refresh" — it was silently failing to share at all, and
+// the only sign was a cryptic "Unexpected end of JSON input" once
+// Vercel's platform-level rejection came back as a non-JSON body) —
+// this way the failure is immediate and says WHY, instead of paying for
+// a slow client-side base64 encode and a network round-trip first only
+// to get a confusing parse error out the other end.
+const MAX_SHARE_BYTES = 3 * 1024 * 1024;
+
 /**
  * @param {{ slot: "design"|"services", subgroupName?: string, file: File }} args
- * @throws if the secret is wrong/missing (server-enforced) or the request fails
+ * @throws if the file is too big to fit this upload path, the secret is
+ *   wrong/missing (server-enforced), or the request fails
  */
 export async function uploadSharedFile({ slot, subgroupName, file }) {
+  if (file.size > MAX_SHARE_BYTES) {
+    const mb = (n) => (n / (1024 * 1024)).toFixed(1);
+    throw new Error(
+      `"${file.name}" is ${mb(file.size)} MB — too big to share (this upload path tops out around ` +
+        `${mb(MAX_SHARE_BYTES)} MB, a Vercel platform limit, not something this app can raise on its own). ` +
+        "It's loaded on your screen only and won't survive a refresh or show for other visitors — " +
+        "flag it if this needs solving properly (uploading straight to Blob storage instead of through " +
+        "this API route would support much bigger files)."
+    );
+  }
   const secret = getCustodianSecret();
   const contentBase64 = await fileToBase64(file);
   const resp = await fetch("/api/shared-upload", {

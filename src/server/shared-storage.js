@@ -31,12 +31,31 @@ import { randomUUID } from "node:crypto"; // explicit import rather than relying
 
 const INDEX_PATHNAME = "k2-shared-index.json";
 
-/** @returns {Promise<{ files: Array<{ id: string, slot: string, subgroupName: string|null, name: string, blobUrl: string, uploadedAt: number }> }>} */
+/**
+ * @returns {Promise<{ files: Array<{ id: string, slot: string, subgroupName: string|null, name: string, blobUrl: string, uploadedAt: number }> }>}
+ *
+ * Cache-busted (2026-09-16, per Cameron: "sometimes when i add something
+ * in custodian mode it takes a few times of uploading - refresh -
+ * upload - refresh for it to stick") — `existing.url` is a public Blob
+ * CDN URL, and re-fetching the SAME URL right after writeIndex() just
+ * overwrote it is exactly the shape of request a CDN edge can still
+ * answer from a stale cached copy for a short window, silently handing
+ * back the index from BEFORE the just-added entry. Every caller of
+ * addToIndex()/removeFromIndex() re-reads the index immediately
+ * beforehand (read-modify-write), so a stale read here doesn't just
+ * show a stale UI once — it gets baked into the very next write, which
+ * writes back a version missing whatever the stale read couldn't see,
+ * genuinely losing that entry rather than just delaying it. A unique
+ * query string on every fetch defeats any URL-keyed cache in the path
+ * (browser, proxy, or CDN) regardless of what caching Vercel Blob's
+ * edge is actually doing here — more robust than trying to reason out
+ * or depend on its exact cache-control semantics.
+ */
 export async function readIndex() {
   const { blobs } = await list({ prefix: INDEX_PATHNAME });
   const existing = blobs.find((b) => b.pathname === INDEX_PATHNAME);
   if (!existing) return { files: [] };
-  const resp = await fetch(existing.url);
+  const resp = await fetch(`${existing.url}?fresh=${Date.now()}`, { cache: "no-store" });
   if (!resp.ok) return { files: [] };
   return await resp.json();
 }
@@ -46,6 +65,19 @@ async function writeIndex(index) {
     access: "public",
     contentType: "application/json",
     allowOverwrite: true,
+    // Explicit rather than relying on the SDK's default (which, dug into
+    // 2026-09-16, isn't actually resolved client-side at all — the
+    // installed @vercel/blob@2.8.0's put() only sends an
+    // x-add-random-suffix header AT ALL when this is explicitly passed;
+    // left unset, the *server* decides, undocumented from here). This
+    // MUST be false: readIndex() looks up the index by exact pathname
+    // equality (`b.pathname === INDEX_PATHNAME`) — if a write ever
+    // landed at a randomly-suffixed pathname instead, it would both (a)
+    // never be found by that lookup, since readIndex()/writeIndex()
+    // always target the literal constant, and (b) leave an orphaned
+    // blob behind every time, since allowOverwrite only overwrites an
+    // EXISTING blob at the exact pathname you ask for.
+    addRandomSuffix: false,
   });
 }
 
