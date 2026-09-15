@@ -78,6 +78,31 @@ const designLineworkGroup = designGroup.addSubgroup({ label: "Linework" });
 const designSurfaceGroup = designGroup.addSubgroup({ label: "Surfaces" });
 const servicesGroup = createLayerGroup(layerTreeEl, { label: "Underground Services" });
 
+wireHudToggle();
+
+/**
+ * Collapsible HUD panel on mobile (2026-09-16), per Cameron: "just need
+ * to be able to collapse it as well, takes up a whole phone screen" —
+ * same off-canvas convention as main-2d.js's wireSidebarToggle() (see
+ * its own docstring): pure UI, no dependency on the Three.js world, so
+ * wired immediately rather than waiting on anything async. Desktop is
+ * untouched (#hud stays permanently visible); the actual open/closed
+ * behaviour only kicks in under 3d.html's own `max-width: 768px` media
+ * query, which is what makes #hud start closed there.
+ */
+function wireHudToggle() {
+  const app = document.getElementById("app");
+  const openBtn = document.getElementById("hud-toggle");
+  const closeBtn = document.getElementById("hud-close");
+  const backdrop = document.getElementById("hud-backdrop");
+
+  const setOpen = (open) => app.classList.toggle("hud-open", open);
+
+  openBtn.addEventListener("click", () => setOpen(true));
+  closeBtn.addEventListener("click", () => setOpen(false));
+  backdrop.addEventListener("click", () => setOpen(false));
+}
+
 /**
  * Nested-by-12d-model-path layer tree for a THREE.js scene — the 3D
  * counterpart of main-2d.js's createLineFeatureController(), used for
