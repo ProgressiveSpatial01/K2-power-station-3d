@@ -53,18 +53,57 @@
       }
       .shared-file-row .shared-file-delete:hover { color: #fff; border-color: #d9534f; }
 
-      /* Layers panel (2026-09-10) — same row shape as index.html's
-         sidebar layer tree, minus the grouping/rename/delete affordances
-         this simpler flat list doesn't have. */
+      /* Layers panel (2026-09-10, upgraded to the full nested/grouped
+         tree 2026-09-15 per Cameron: "any chance we can get the same
+         layering and side bar on the 3d viewer?") — identical class
+         names and rules to index.html's sidebar layer tree, so
+         layer-tree.js's DOM (built by createLayerGroup()) renders the
+         same way in both pages without a second implementation. */
+      .layer-group { margin-bottom: 2px; }
+      .layer-group-header {
+        display: flex; align-items: center; gap: 6px;
+        padding: 5px 2px; cursor: pointer; border-radius: 4px; user-select: none;
+      }
+      .layer-group-header:hover { background: #2a2d31; }
+      .layer-group-header .caret { width: 10px; font-size: 10px; color: #8a8f98; flex-shrink: 0; }
+      .layer-group-header .layer-group-title {
+        font-weight: 600; font-size: 12px; color: #ddd;
+        white-space: nowrap; overflow: hidden; text-overflow: ellipsis; min-width: 0;
+      }
+      .layer-group-body { margin-left: 16px; }
+      .layer-group-empty { margin-left: 16px; font-size: 11px; color: #666; font-style: italic; padding: 2px 0 6px; }
+
       .layer-row {
         display: flex; align-items: center; gap: 6px;
         padding: 3px 2px; font-size: 12px; color: #cfd2d6; cursor: pointer;
         min-width: 0;
       }
       .layer-row:hover { color: #fff; }
-      .layer-row input[type="checkbox"] { flex-shrink: 0; }
+      .layer-row input[type="checkbox"], .layer-row input[type="radio"] { flex-shrink: 0; }
+      .layer-row .swatch {
+        width: 10px; height: 10px; border-radius: 2px; flex-shrink: 0; border: 1px solid rgba(255,255,255,0.3);
+      }
       .layer-row .layer-row-label {
         white-space: nowrap; overflow: hidden; text-overflow: ellipsis; min-width: 0;
+      }
+      .layer-group-header, .layer-row { min-width: 0; }
+
+      /* Rename (✎) affordance only here — delete isn't wired for 3D
+         layers (see main.js createModelGroupedLayerController()/
+         addFlatLayerRow(): no onDelete passed, so layer-tree.js simply
+         doesn't render a delete button; nothing to disable). A faint
+         always-visible hint, full strength on hovering the row/group. */
+      .layer-icon-btn {
+        flex-shrink: 0; margin-left: auto; background: none; border: none; cursor: pointer;
+        font-size: 11px; line-height: 1; padding: 2px 3px; border-radius: 3px;
+        color: #8a8f98; opacity: 0.35;
+      }
+      .layer-row:hover .layer-icon-btn, .layer-group-header:hover .layer-icon-btn { opacity: 1; }
+      .layer-icon-btn:hover { background: #3a3d42; color: #fff; }
+
+      .layer-rename-input {
+        flex: 1; min-width: 0; font: inherit; color: inherit;
+        background: #111; border: 1px solid #2fa3ff; border-radius: 3px; padding: 1px 4px;
       }
     </style>
   </head>
@@ -93,9 +132,7 @@
 
         <div class="hud-section">
           <h2>Layers</h2>
-          <div id="layers-list">
-            <p class="shared-files-empty">Nothing loaded yet.</p>
-          </div>
+          <div id="layer-tree"></div>
         </div>
       </div>
     </div>

@@ -20,6 +20,8 @@ import { buildServiceMeshes } from "./services.js";
 import { buildSurfaceMeshes } from "./surfaces-3d.js";
 import { buildDesignLineworkMeshes } from "./design-linework-3d.js";
 import { roundTripCheck, mgaToScene } from "./crs.js";
+import { createLayerGroup } from "./layer-tree.js";
+import { buildModelTree } from "./model-tree.js";
 import {
   getCustodianSecret,
   setCustodianSecret,
@@ -49,6 +51,141 @@ const SCENE_ORIGIN_MGA = [384899.031, 6434081.091, 5.55]; // [easting, northing,
   if (!check.ok) {
     console.error("[K2-3D] CRS round-trip check FAILED — do not trust transforms:", check);
   }
+}
+
+// --- Sidebar layer tree (2026-09-15) ---------------------------------
+//
+// Per Cameron: "any chance we can get the same layering and side bar on
+// the 3d viewer? doesnt have to have the measuring capabilities, but
+// turning the layers on and off would be handy." Was a flat one-row-
+// per-FILE list (see git history around 2026-09-10); now the same
+// nested/grouped tree as the 2D page — layer-tree.js and model-tree.js
+// are pure DOM/data with no Mapbox dependency, so reused here as-is
+// rather than reinvented. Structure mirrors main-2d.js exactly: Design
+// (Linework + Surfaces subgroups, IFC designs as direct rows) and
+// Underground Services (nested by 12d model path). No Base Map group
+// (nothing to switch — this page has no basemap) and no measure/
+// section/volume tools, per Cameron's "doesn't have to have the
+// measuring capabilities."
+//
+// Built at module scope (pure DOM, no dependency on the Three.js world)
+// so it exists immediately; the model-grouped CONTROLLERS below (which
+// do need `world.scene.three` to parent objects into) are created once
+// `main()` has set the world up, and handed out via `ctx`.
+const layerTreeEl = document.getElementById("layer-tree");
+const designGroup = createLayerGroup(layerTreeEl, { label: "Design" });
+const designLineworkGroup = designGroup.addSubgroup({ label: "Linework" });
+const designSurfaceGroup = designGroup.addSubgroup({ label: "Surfaces" });
+const servicesGroup = createLayerGroup(layerTreeEl, { label: "Underground Services" });
+
+/**
+ * Nested-by-12d-model-path layer tree for a THREE.js scene — the 3D
+ * counterpart of main-2d.js's createLineFeatureController(), used for
+ * both services and design linework (the two kinds of data that arrive
+ * as many small records each carrying a real `model` path, as opposed
+ * to surfaces/IFC which are one row per upload — see the flat rows added
+ * directly in the handlers below for those).
+ *
+ * services.js/design-linework-3d.js each build ONE FLAT THREE.Group per
+ * upload (one mesh/line per record, every child's `userData.model` set).
+ * `absorb()` takes that flat group and re-parents each child into a
+ * per-model-path THREE.Group living directly in the scene — `Object3D
+ * .add()` auto-detaches a child from wherever it was, so this is a
+ * plain move, not a copy or a rebuild of existing geometry. The
+ * now-empty flat group passed in can just be discarded by the caller.
+ *
+ * Mirrors createLineFeatureController()'s tree logic (rebuild-only-when-
+ * a-new-model-appears, default-everything-checked-again when it does)
+ * closely enough to keep the two pages' sidebar behaviour consistent —
+ * including that "any new model resets every checkbox" quirk, kept
+ * deliberately rather than diverging into a different, untested rule.
+ *
+ * @param {{ sidebarGroup: ReturnType<typeof createLayerGroup>, sceneRoot: import("three").Object3D }} deps
+ */
+function createModelGroupedLayerController({ sidebarGroup, sceneRoot }) {
+  const knownModelPaths = new Set();
+  const modelGroups = new Map(); // modelPath -> THREE.Group, a direct child of sceneRoot
+  const checkedGroups = new Set();
+
+  function ensureModelGroup(modelPath) {
+    let g = modelGroups.get(modelPath);
+    if (!g) {
+      g = new THREE.Group();
+      g.name = modelPath;
+      sceneRoot.add(g);
+      modelGroups.set(modelPath, g);
+    }
+    return g;
+  }
+
+  // Simpler than the 2D page's colourForModel() (picks the MOST COMMON
+  // colour among a model's features, added after Cameron caught a wrong
+  // swatch) — just the first child's material colour. Good enough for a
+  // sidebar swatch; revisit the same way if a model group ever turns out
+  // to mix colours enough here to actually mislead.
+  function colourForModel(modelPath) {
+    const material = modelGroups.get(modelPath)?.children[0]?.material;
+    return material ? `#${material.color.getHexString()}` : "#2fa3ff";
+  }
+
+  function renderTree(g, nodes) {
+    for (const node of nodes) {
+      if (node.type === "leaf") {
+        g.addRow({
+          label: node.label,
+          color: colourForModel(node.fullPath),
+          checked: checkedGroups.has(node.fullPath),
+          onChange: (checked) => {
+            if (checked) checkedGroups.add(node.fullPath);
+            else checkedGroups.delete(node.fullPath);
+            const modelGroup = modelGroups.get(node.fullPath);
+            if (modelGroup) modelGroup.visible = checked;
+          },
+        });
+      } else {
+        renderTree(g.addSubgroup({ label: node.label }), node.children);
+      }
+    }
+  }
+
+  function rebuildTreeIfNeeded(newModelPaths) {
+    const hasNewModel = newModelPaths.some((m) => !knownModelPaths.has(m));
+    if (!hasNewModel) return;
+    for (const m of newModelPaths) knownModelPaths.add(m);
+    checkedGroups.clear();
+    for (const m of knownModelPaths) checkedGroups.add(m); // default: everything checked, matches 2D
+    sidebarGroup.clear();
+    renderTree(sidebarGroup, buildModelTree([...knownModelPaths]));
+  }
+
+  return {
+    /** @param {import("three").Group} flatGroup - one mesh/line per record, each with userData.model — from services.js/design-linework-3d.js */
+    absorb(flatGroup) {
+      const newModelPaths = new Set();
+      for (const child of [...flatGroup.children]) {
+        const modelPath = child.userData.model ?? "(unmodelled)";
+        newModelPaths.add(modelPath);
+        ensureModelGroup(modelPath).add(child); // reparents out of flatGroup
+      }
+      rebuildTreeIfNeeded([...newModelPaths]);
+    },
+  };
+}
+
+/**
+ * A flat sidebar row (no model-path nesting) wired straight to one
+ * object's visibility — for IFC designs and 12d surfaces, matching how
+ * the 2D page treats those two: one row per upload, not a tree.
+ */
+function addFlatLayerRow(sidebarGroup, { label, color, object }) {
+  sidebarGroup.addRow({
+    label,
+    color,
+    checked: true,
+    onChange: (checked) => {
+      object.visible = checked;
+    },
+  });
 }
 
 async function main() {
@@ -83,64 +220,22 @@ async function main() {
   const { ifcLoader } = await setupIfcLoader(components, world);
   setStatus("Ready — choose a design (.ifc/.12da/.12daz) and/or a .12da/.12daz services file.");
 
-  const ctx = { components, ifcLoader, world, terrainState, layers: [] };
+  // The two nested-tree layers (Underground Services, Design > Linework)
+  // need somewhere in the scene to parent their per-model groups into —
+  // built here, once, now that `world` exists (see the module-scope
+  // comment above createModelGroupedLayerController() for why the
+  // sidebar DOM itself was built earlier without waiting on this).
+  const servicesLayers = createModelGroupedLayerController({ sidebarGroup: servicesGroup, sceneRoot: world.scene.three });
+  const designLineworkLayers = createModelGroupedLayerController({
+    sidebarGroup: designLineworkGroup,
+    sceneRoot: world.scene.three,
+  });
+
+  const ctx = { components, ifcLoader, world, terrainState, servicesLayers, designLineworkLayers };
   wireDesignInput(ctx);
   wireServicesInput(ctx);
   wireCustodianMode();
   await loadSharedFiles(ctx);
-}
-
-// --- Layers panel (2026-09-10) --------------------------------------
-//
-// Per Cameron: "probably need the ability to toggle layers on and off
-// in the 3d view" — previously everything loaded just piled into the
-// scene with no way to isolate anything. One row per loaded FILE (not
-// a full nested per-model-path tree like the 2D sidebar's — that's a
-// materially bigger feature; this is the useful middle ground: hide
-// "that one services upload" or "that one surface" without digging
-// through the whole scene). A design file that contains BOTH surfaces
-// and linework registers as two separate rows, since they're toggled
-// independently.
-//
-// `objects` holds whatever THREE.Object3D(s) this layer's checkbox
-// should show/hide — for a services/surfaces/linework Group, `.visible`
-// cascades to every descendant automatically; for an IFC model there's
-// no wrapping group (see ifc.js's onItemSet — it adds model.object
-// straight to the scene), so the model's own object goes in the array
-// directly. No terrain toggle: terrainState.mesh gets fully replaced
-// (old one disposed) whenever a services file loads — see
-// handleServicesFile() — so a captured reference to it would go stale
-// the moment that happens.
-
-function registerLayer(ctx, { label, kind, objects }) {
-  ctx.layers.push({ label, kind, objects, visible: true });
-  renderLayersList(ctx);
-}
-
-function renderLayersList(ctx) {
-  const container = document.getElementById("layers-list");
-  if (ctx.layers.length === 0) {
-    container.innerHTML = `<p class="shared-files-empty">Nothing loaded yet.</p>`;
-    return;
-  }
-  container.innerHTML = "";
-  for (const layer of ctx.layers) {
-    const row = document.createElement("label");
-    row.className = "layer-row";
-    const checkbox = document.createElement("input");
-    checkbox.type = "checkbox";
-    checkbox.checked = layer.visible;
-    checkbox.addEventListener("change", () => {
-      layer.visible = checkbox.checked;
-      for (const obj of layer.objects) obj.visible = layer.visible;
-    });
-    const nameEl = document.createElement("span");
-    nameEl.className = "layer-row-label";
-    nameEl.textContent = layer.label;
-    nameEl.title = layer.label;
-    row.append(checkbox, nameEl);
-    container.appendChild(row);
-  }
 }
 
 /**
@@ -236,7 +331,11 @@ async function handleIfcFile(file, ctx, opts = {}) {
           `${size.z.toFixed(2)} m — check it lines up with the 2D view.`
       );
     }
-    registerLayer(ctx, { label: file.name, kind: "ifc", objects: [model.object] });
+    // Flat row directly in "Design" — matching the 2D page, which
+    // doesn't nest IFC designs into a model-path tree either (only
+    // services/design-linework do, since only those come as many small
+    // records each carrying a real 12d `model` path).
+    addFlatLayerRow(designGroup, { label: file.name, color: "#ffb454", object: model.object });
     if (!opts.skipSharing) await shareIfCustodian("design", file, null);
   } catch (err) {
     console.error(err);
@@ -275,8 +374,18 @@ async function handleDesign12dFile(file, ctx, opts = {}) {
     const messages = [];
     if (hasSurfaces) {
       const { group, excludedScaffold } = buildSurfaceMeshes(records.surfaces, SCENE_ORIGIN_MGA, file.name);
-      ctx.world.scene.three.add(group);
-      registerLayer(ctx, { label: `${file.name} — surfaces`, kind: "surfaces", objects: [group] });
+      // One flat row per SURFACE (not one row for the whole file) —
+      // matching the 2D page's per-surfaceId rows in its Surfaces
+      // subgroup. Each mesh already carries userData.surfaceId (see
+      // surfaces-3d.js) and its own normalised colour.
+      for (const mesh of [...group.children]) {
+        ctx.world.scene.three.add(mesh); // reparents out of the now-discarded flat `group`
+        addFlatLayerRow(designSurfaceGroup, {
+          label: mesh.userData.surfaceId ?? mesh.name,
+          color: `#${mesh.material.color.getHexString()}`,
+          object: mesh,
+        });
+      }
       messages.push(
         `${records.surfaces.length} surface(s) added` +
           (excludedScaffold > 0 ? ` (${excludedScaffold} scaffold triangle(s) excluded, see console)` : "")
@@ -284,8 +393,7 @@ async function handleDesign12dFile(file, ctx, opts = {}) {
     }
     if (hasLinework) {
       const { group, skippedShort } = buildDesignLineworkMeshes(records, SCENE_ORIGIN_MGA);
-      ctx.world.scene.three.add(group);
-      registerLayer(ctx, { label: `${file.name} — linework`, kind: "linework", objects: [group] });
+      ctx.designLineworkLayers.absorb(group);
       messages.push(
         `${records.length - skippedShort} design linework string(s) added` +
           (skippedShort > 0 ? ` (${skippedShort} point/symbol record(s) skipped)` : "")
@@ -329,8 +437,7 @@ async function handleServicesFile(file, ctx, opts = {}) {
     const records = await loadTwelveDaFile(file);
     console.log("[K2-3D] Parsed 12d records:", records);
     const group = buildServiceMeshes(records, SCENE_ORIGIN_MGA);
-    ctx.world.scene.three.add(group);
-    registerLayer(ctx, { label: file.name, kind: "services", objects: [group] });
+    ctx.servicesLayers.absorb(group);
 
     // TEST-ONLY, per Cameron (2026-08-24): swap the terrain reference
     // plane for one sitting ~0.9m above the loaded pipes' top-of-pipe
