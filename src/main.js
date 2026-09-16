@@ -213,6 +213,126 @@ function addFlatLayerRow(sidebarGroup, { label, color, object }) {
   });
 }
 
+// --- IFC element inspection (2026-09-16) ------------------------------
+//
+// Per Cameron: "clicking on the ifc concrete structure in 3d view and it
+// gives you the concrete volume. is that possible? does it come across
+// in attributes?" — checked a real K2 concrete IFC
+// (K2_LER_Slab_Foundations_rev4.ifc) for IfcElementQuantity/
+// Qto_BaseQuantities entities: none. Every property on every element is
+// a custom Pset_K2_* text value (Material, Thickness_m, BaseLevel_AHD,
+// etc.) — plain attributes, not a quantity take-off. These K2 IFCs are
+// generated straight from 12d design data, not authored in a BIM tool
+// that would auto-compute Qto sets, so volume genuinely isn't "in the
+// attributes" for any of them.
+//
+// It doesn't need to be, though — @thatopen/fragments computes it
+// directly from each element's actual solid geometry via
+// `model.getItemsVolume(localIds)`, which already lives in the
+// installed @thatopen/fragments@2.8.0 (no new dependency). Verified
+// against that same real file: footing "GT11-FOOT-S" (self-described as
+// "South strip footing 1000 wide x 350 thk", a 17.042m run with 34
+// conduit-penetration voids cut into it) returned 5.774 m³ — closely
+// matching a hand-computed gross-extrusion-minus-openings estimate
+// (~5.80-5.84 m³, from the same file's own IFCEXTRUDEDAREASOLID/
+// IFCRELVOIDSELEMENT entities) — confirming this is a real NET volume
+// (openings already subtracted), not a naive gross figure.
+//
+// Picking goes through fragments.raycast(), which runs in the fragments
+// WORKER against the real geometry — the only correct way to pick an
+// element here, since (per ifc.js's 2D solid-shade notes) a loaded
+// model's THREE geometry has no main-thread-readable vertex data to
+// raycast against by hand. Its `mouse` must be CANVAS-RELATIVE PIXEL
+// coordinates, not NDC (-1..1) — confirmed by reading fragments' own
+// screenToCasterPoint()/screenToCast() source and by direct testing: an
+// NDC-valued mouse silently hit nothing.
+
+/** Small HTML-escape for IFC text fields landing in innerHTML (Name/Description/etc. — Cameron's own files, but cheap insurance, same posture as profile-chart.js's escapeXml()). */
+function escapeHtml(s) {
+  return String(s).replace(/[&<>"']/g, (c) => ({ "&": "&amp;", "<": "&lt;", ">": "&gt;", '"': "&quot;", "'": "&apos;" }[c]));
+}
+
+function attrValue(data, name) {
+  return data?.[name]?.value ?? null;
+}
+
+function renderElementInfo(container, info) {
+  if (!info) {
+    container.innerHTML = `<p class="shared-files-empty">Click a concrete/IFC element in the 3D view to see its details.</p>`;
+    return;
+  }
+  if (info.error) {
+    container.innerHTML = `<p class="shared-files-empty">Couldn't read that element: ${escapeHtml(info.error)}</p>`;
+    return;
+  }
+  const { data, volume } = info;
+  const name = attrValue(data, "Name") ?? "(unnamed)";
+  const category = attrValue(data, "_category");
+  const description = attrValue(data, "Description");
+  const predefinedType = attrValue(data, "PredefinedType");
+  const hasVolume = typeof volume === "number" && Number.isFinite(volume) && volume > 0;
+
+  container.innerHTML = `
+    <div class="element-info-name"><b>${escapeHtml(name)}</b>${category ? ` <span class="element-info-category">${escapeHtml(category)}</span>` : ""}</div>
+    ${description ? `<div class="element-info-desc">${escapeHtml(description)}</div>` : ""}
+    ${predefinedType ? `<div class="element-info-desc">${escapeHtml(predefinedType)}</div>` : ""}
+    ${
+      hasVolume
+        ? `<div class="element-info-volume">${volume.toFixed(3)} m³</div>
+           <div class="element-info-note">Computed from the element's own solid geometry (net of any openings) — this IFC carries no quantity/Qto data of its own to read instead.</div>`
+        : `<div class="element-info-note">No computed volume for this element (not a solid, or its geometry couldn't be measured).</div>`
+    }
+  `;
+}
+
+/** @param {{ components: OBC.Components, world: OBC.World }} ctx */
+function wireIfcInspection(ctx) {
+  const canvas = ctx.world.renderer.three.domElement;
+  const infoEl = document.getElementById("element-info");
+  if (!infoEl) return; // defensive — this HUD section is optional markup
+
+  let downPos = null;
+  canvas.addEventListener("pointerdown", (e) => {
+    downPos = { x: e.clientX, y: e.clientY };
+  });
+
+  canvas.addEventListener("pointerup", async (e) => {
+    if (!downPos) return;
+    const movedPx = Math.hypot(e.clientX - downPos.x, e.clientY - downPos.y);
+    downPos = null;
+    if (movedPx > 5) return; // an orbit/pan drag, not a click — leave whatever's shown alone
+
+    const fragments = ctx.components.get(OBC.FragmentsManager);
+    const rect = canvas.getBoundingClientRect();
+    const mouse = new THREE.Vector2(e.clientX - rect.left, e.clientY - rect.top);
+
+    let result;
+    try {
+      result = await fragments.raycast({ camera: ctx.world.camera.three, mouse, dom: canvas });
+    } catch (err) {
+      console.error("[K2-3D] IFC raycast failed:", err);
+      return;
+    }
+    if (!result) {
+      renderElementInfo(infoEl, null);
+      return;
+    }
+
+    const model = result.fragments;
+    const localId = result.localId;
+    try {
+      const [[data], volume] = await Promise.all([
+        model.getItemsData([localId], { attributesDefault: true }),
+        model.getItemsVolume([localId]).catch(() => null),
+      ]);
+      renderElementInfo(infoEl, { data, volume });
+    } catch (err) {
+      console.error("[K2-3D] Failed to read clicked IFC element's data:", err);
+      renderElementInfo(infoEl, { error: err.message });
+    }
+  });
+}
+
 async function main() {
   const container = document.getElementById("app");
 
@@ -259,6 +379,7 @@ async function main() {
   const ctx = { components, ifcLoader, world, terrainState, servicesLayers, designLineworkLayers };
   wireDesignInput(ctx);
   wireServicesInput(ctx);
+  wireIfcInspection(ctx);
   wireCustodianMode();
   await loadSharedFiles(ctx);
 }
