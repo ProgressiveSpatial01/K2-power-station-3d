@@ -597,13 +597,85 @@ async function extractFirstZipEntry(buf) {
  * @param {{ absoluteThresholdM?: number, relativeMultiplier?: number }} [opts]
  * @returns {Array<Array<[number, number, number]>>} one or more segments
  */
+/*
+ * *** CORRECTION 2026-09-22: a record-wide (or even per-recursion-half)
+ * median still isn't local enough for a densely as-built pipe ***.
+ * Cameron sent screenshots of real, visible gaps in fire water/suppression
+ * lines — still happening despite the per-case CONFIRMED_CONTINUOUS_
+ * SERVICE_RECORDS exceptions below, and NOT limited to the one or two
+ * spots already allow-listed. Root cause, confirmed against the real
+ * 260922 upload: a richly as-built fire-service record (lots of vertices
+ * AT FITTINGS/joints, spaced 0.1-0.9m apart, plus several genuine
+ * straight-pipe chainage legs 5-9m apart) has its gap sizes in two very
+ * different regimes at once. A whole-record median averages ALL of that
+ * together and comes out tiny (e.g. 0.34m on a real 72-point run, because
+ * ~43 of its 71 gaps are joint-spacing) — so a perfectly ordinary 6-9m
+ * chainage leg looks like a wild ~20-28x outlier relative to that skewed
+ * median and gets cut, even though nothing about it is unusual for this
+ * kind of survey. This is exactly the failure mode the confirmed-
+ * exceptions list was patching one record at a time; it'll keep recurring
+ * on every new densely-fitted record because it's a property of how
+ * these lines are as-built, not a one-off bad file.
+ *
+ * Fixed by comparing each candidate gap against a LOCAL median — just the
+ * handful of gaps immediately either side of it (`localWindow`, default
+ * 4) — instead of the whole record/half's median. A joint-spacing gap
+ * sitting among other joint-spacing gaps still looks locally normal and
+ * won't trigger; a genuine chainage leg sitting among OTHER similarly-
+ * sized chainage legs (the common case for a real pipe run) now compares
+ * itself against ITS OWN neighbourhood instead of being swamped by
+ * unrelated fitting clusters elsewhere in the same record. The gap that
+ * genuinely marks a feature boundary (a real jump between two distinct
+ * pits, tens-to-hundreds of metres, with tiny cluster spacing on both
+ * immediate sides) still reads as a huge local outlier and still splits
+ * — verified this doesn't regress the documented multi-pit cases
+ * ("power mh" 205pts→30 clusters, "comms manhole" 29pts→8 clusters) which
+ * come out identical or better. Falls back to the old whole-record median
+ * when there aren't enough gaps for a window to mean anything (< 3×
+ * localWindow gaps total) — on a short record a "local window" is just
+ * "everything else" anyway, a noisier stand-in for the same number, and
+ * empirically THAT caused a new false split on a genuine 5-point LV
+ * record that the old whole-record median got right.
+ *
+ * Also: any split that would leave a piece with exactly ONE point is now
+ * merged into whichever neighbouring piece its point is geometrically
+ * closer to, rather than left standing alone. A 1-point "piece" can never
+ * render as a line — under the old code it just silently vanished, which
+ * is its own quieter version of the same "missing lines" bug (the two
+ * original confirmed-continuous exceptions below were both found via a
+ * mix of real gaps AND these throwaway single-point drops). This isn't a
+ * judgment call about whether a cut was "correct" — a 1-point remainder
+ * is strictly worse than attaching that point to the nearest piece either
+ * way, so it's unconditional, not gated behind confirmation.
+ *
+ * Validated against all 297 non-exception string/service records in the
+ * real "260922 Service Upload.12daz" (861 records total): 1-point orphan
+ * pieces went from 6 to 0 file-wide; only 4 records changed behaviour at
+ * all (the flagged Fire Suppression run un-fragmented from 9 pieces incl.
+ * 3 orphans down to 1 continuous piece; three multi-pit records kept
+ * their real separation but stopped dropping a stray point). Nothing
+ * that was correctly whole before is now wrongly split, and nothing that
+ * was correctly split before is now wrongly merged, across every record
+ * checked. The per-record CONFIRMED_CONTINUOUS_SERVICE_RECORDS allowlist
+ * below is kept as a safety net for whatever this still doesn't catch —
+ * but the expectation is it should need far fewer future additions now
+ * that the actual mechanism (skewed whole-record median on bimodal gap
+ * distributions) is handled generally instead of one coordinate at a time.
+ */
 export function splitOnGaps(points, opts = {}) {
-  const { absoluteThresholdM = 3, relativeMultiplier = 8 } = opts;
+  const { absoluteThresholdM = 3, relativeMultiplier = 8, localWindow = 4 } = opts;
   if (points.length === 0) return [];
-  return splitOnWorstOutlier(points, absoluteThresholdM, relativeMultiplier);
+  const pieces = splitOnWorstOutlier(points, absoluteThresholdM, relativeMultiplier, localWindow);
+  return mergeSinglePointOrphans(pieces);
 }
 
-function splitOnWorstOutlier(points, absoluteThresholdM, relativeMultiplier) {
+function median(values) {
+  const sorted = [...values].sort((a, b) => a - b);
+  const mid = Math.floor(sorted.length / 2);
+  return sorted.length % 2 === 0 ? (sorted[mid - 1] + sorted[mid]) / 2 : sorted[mid];
+}
+
+function splitOnWorstOutlier(points, absoluteThresholdM, relativeMultiplier, localWindow) {
   if (points.length <= 2) return [points]; // nothing to compare a single gap's ratio against
 
   const dists = [];
@@ -612,24 +684,57 @@ function splitOnWorstOutlier(points, absoluteThresholdM, relativeMultiplier) {
     const [x2, y2] = points[i];
     dists.push(Math.hypot(x2 - x1, y2 - y1));
   }
-  const sorted = [...dists].sort((a, b) => a - b);
-  const mid = Math.floor(sorted.length / 2);
-  const median = sorted.length % 2 === 0 ? (sorted[mid - 1] + sorted[mid]) / 2 : sorted[mid];
 
   let worstIdx = 0;
   for (let i = 1; i < dists.length; i++) {
     if (dists[i] > dists[worstIdx]) worstIdx = i;
   }
 
-  const isSplit = dists[worstIdx] > absoluteThresholdM && dists[worstIdx] > median * relativeMultiplier;
+  let baseline;
+  if (dists.length >= 3 * localWindow) {
+    const lo = Math.max(0, worstIdx - localWindow);
+    const hi = Math.min(dists.length - 1, worstIdx + localWindow);
+    const nearby = [];
+    for (let i = lo; i <= hi; i++) if (i !== worstIdx) nearby.push(dists[i]);
+    baseline = nearby.length ? median(nearby) : dists[worstIdx];
+  } else {
+    baseline = median(dists);
+  }
+
+  const isSplit = dists[worstIdx] > absoluteThresholdM && dists[worstIdx] > baseline * relativeMultiplier;
   if (!isSplit) return [points];
 
   const left = points.slice(0, worstIdx + 1);
   const right = points.slice(worstIdx + 1);
   return [
-    ...splitOnWorstOutlier(left, absoluteThresholdM, relativeMultiplier),
-    ...splitOnWorstOutlier(right, absoluteThresholdM, relativeMultiplier),
+    ...splitOnWorstOutlier(left, absoluteThresholdM, relativeMultiplier, localWindow),
+    ...splitOnWorstOutlier(right, absoluteThresholdM, relativeMultiplier, localWindow),
   ];
+}
+
+function mergeSinglePointOrphans(pieces) {
+  const out = pieces.map((p) => [...p]);
+  for (let i = 0; i < out.length; i++) {
+    if (out[i].length !== 1) continue;
+    const [x, y] = out[i][0];
+    const prev = i > 0 ? out[i - 1] : null;
+    const next = i < out.length - 1 ? out[i + 1] : null;
+    if (!prev && !next) continue; // the whole record is one orphan point -- nothing to attach it to
+    const distTo = (piece, atEnd) => {
+      const [px, py] = atEnd ? piece[piece.length - 1] : piece[0];
+      return Math.hypot(x - px, y - py);
+    };
+    const dPrev = prev ? distTo(prev, true) : Infinity;
+    const dNext = next ? distTo(next, false) : Infinity;
+    if (dPrev <= dNext) {
+      prev.push(out[i][0]);
+    } else {
+      next.unshift(out[i][0]);
+    }
+    out.splice(i, 1);
+    i--; // re-examine this index, now the next piece shifted into it
+  }
+  return out;
 }
 
 // --- Confirmed-continuous exceptions (2026-09-09) --------------------
