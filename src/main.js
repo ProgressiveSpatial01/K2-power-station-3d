@@ -16,6 +16,7 @@ import {
   resolveCoordinationOffset,
 } from "./ifc.js";
 import { loadTwelveDaFile } from "./twelve-d.js";
+import { isCadFileName, loadCadFile, describeCadSkips } from "./cad-import.js";
 import { buildServiceMeshes } from "./services.js";
 import { buildSurfaceMeshes } from "./surfaces-3d.js";
 import { buildDesignLineworkMeshes } from "./design-linework-3d.js";
@@ -363,7 +364,7 @@ async function main() {
 
   setStatus("Setting up IFC loader…");
   const { ifcLoader } = await setupIfcLoader(components, world);
-  setStatus("Ready — choose a design (.ifc/.12da/.12daz) and/or a .12da/.12daz services file.");
+  setStatus("Ready — choose a design (.ifc/.12da/.12daz/.dxf/.dwg) and/or a .12da/.12daz services file.");
 
   // The two nested-tree layers (Underground Services, Design > Linework)
   // need somewhere in the scene to parent their per-model groups into —
@@ -501,8 +502,8 @@ async function handleIfcFile(file, ctx, opts = {}) {
 async function handleDesign12dFile(file, ctx, opts = {}) {
   setStatus(`Loading ${file.name}…`);
   try {
-    const records = await loadTwelveDaFile(file);
-    console.log("[K2-3D] Parsed design 12d records:", records);
+    const records = isCadFileName(file.name) ? await loadCadFile(file) : await loadTwelveDaFile(file);
+    console.log("[K2-3D] Parsed design records:", records);
 
     const hasSurfaces = records.surfaces.length > 0;
     const hasLinework = records.length > 0;
@@ -545,7 +546,7 @@ async function handleDesign12dFile(file, ctx, opts = {}) {
           (skippedShort > 0 ? ` (${skippedShort} point/symbol record(s) skipped)` : "")
       );
     }
-    setStatus(`Loaded ${file.name}: ${messages.join("; ")}.`);
+    setStatus(`Loaded ${file.name}: ${messages.join("; ")}.${describeCadSkips(records)}`);
     if (!opts.skipSharing) await shareIfCustodian("design", file, null);
   } catch (err) {
     console.error(err);
@@ -564,10 +565,10 @@ function wireDesignInput(ctx) {
     if (!file) return;
     if (/\.ifc$/i.test(file.name)) {
       await handleIfcFile(file, ctx);
-    } else if (/\.12daz?$/i.test(file.name)) {
+    } else if (/\.12daz?$/i.test(file.name) || isCadFileName(file.name)) {
       await handleDesign12dFile(file, ctx);
     } else {
-      setStatus(`Unrecognised design file type: ${file.name} — expected .ifc, .12da, or .12daz.`);
+      setStatus(`Unrecognised design file type: ${file.name} — expected .ifc, .12da, .12daz, .dxf, or .dwg.`);
     }
   });
 }

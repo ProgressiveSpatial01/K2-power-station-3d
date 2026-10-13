@@ -33,6 +33,7 @@ import {
   resolveCoordinationOffset,
 } from "./ifc.js";
 import { loadTwelveDaFile, splitOnGaps, isConfirmedContinuousServiceRecord } from "./twelve-d.js";
+import { isCadFileName, loadCadFile, describeCadSkips } from "./cad-import.js";
 import { normalizeColour } from "./service-colour.js";
 import { createLayerGroup } from "./layer-tree.js";
 import { buildModelTree } from "./model-tree.js";
@@ -198,7 +199,7 @@ function wireSidebarToggle() {
 }
 
 map.on("load", () => {
-  setStatus("Ready — choose a design (.ifc/.12da/.12daz) and/or a .12da/.12daz services file.");
+  setStatus("Ready — choose a design (.ifc/.12da/.12daz/.dxf/.dwg) and/or a .12da/.12daz services file.");
   addCustomLayers();
   wireDesignInput();
   wireServicesInput();
@@ -1423,10 +1424,10 @@ function wireDesignInput() {
     const subgroupName = subgroupInput.value;
     if (/\.ifc$/i.test(file.name)) {
       await handleIfcDesignFile(file, subgroupName);
-    } else if (/\.12daz?$/i.test(file.name)) {
+    } else if (/\.12daz?$/i.test(file.name) || isCadFileName(file.name)) {
       await handleDesign12dFile(file, subgroupName);
     } else {
-      setStatus(`Unrecognised design file type: ${file.name} — expected .ifc, .12da, or .12daz.`);
+      setStatus(`Unrecognised design file type: ${file.name} — expected .ifc, .12da, .12daz, .dxf, or .dwg.`);
     }
   });
 }
@@ -1675,8 +1676,8 @@ async function handleIfcDesignFile(file, subgroupName, opts = {}) {
 async function handleDesign12dFile(file, subgroupName, opts = {}) {
   setStatus(`Loading ${file.name}…`);
   try {
-    const records = await loadTwelveDaFile(file);
-    console.log("[K2-2D] Parsed design 12d records:", records);
+    const records = isCadFileName(file.name) ? await loadCadFile(file) : await loadTwelveDaFile(file);
+    console.log("[K2-2D] Parsed design records:", records);
 
     const hasLinework = records.length > 0;
     const hasSurfaces = records.surfaces.length > 0;
@@ -1690,7 +1691,7 @@ async function handleDesign12dFile(file, subgroupName, opts = {}) {
         );
         console.warn("[K2-2D] Unrecognised top-level 12d block(s):", unrecognized);
       } else {
-        setStatus(`${file.name} has no linework or surface data in it — nothing to show.`);
+        setStatus(`${file.name} has no linework or surface data in it — nothing to show.${describeCadSkips(records)}`);
       }
       return;
     }
@@ -1725,7 +1726,7 @@ async function handleDesign12dFile(file, subgroupName, opts = {}) {
     }
 
     fitMapToFeatures(allNewFeatures);
-    setStatus(`Loaded ${file.name}: ${messages.join(" and ")} on the map.`);
+    setStatus(`Loaded ${file.name}: ${messages.join(" and ")} on the map.${describeCadSkips(records)}`);
     if (!opts.skipSharing) await shareIfCustodian("design", file, subgroupName);
   } catch (err) {
     console.error(err);

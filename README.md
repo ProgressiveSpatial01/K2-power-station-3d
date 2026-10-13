@@ -1211,3 +1211,12 @@ load without error after the rename/deletions.
     running in sees only what THAT browser has uploaded, refreshed or
     not; it does not yet do "I upload once, anyone with the link sees
     it."
+
+### DXF / DWG on the Design input (2026-10-14)
+
+`src/cad-import.js` reads `.dxf` (`dxf-parser`, MIT) and `.dwg` (`@mlightcad/libredwg-web`, LibreDWG as WASM — **GPL-3.0**, lazy-loaded only when a DWG is chosen) and converts them to the same record shape `parse12da()` returns, so 2D and 3D render them through the existing design linework/surface paths: each CAD layer becomes a row under `<file name>/<layer>` in the Design tree, colours come from the entity/layer AutoCAD colour index (or true colour).
+
+- **Drawn:** LINE, LWPOLYLINE/POLYLINE/POLYLINE3D (bulges tessellated), ARC, CIRCLE, 3DFACE (→ a surface per layer), POINT and INSERT (as a 0.3 m diamond marker). Anything else (SPLINE, ELLIPSE, HATCH, text, dimensions, ACIS solids…) is not drawn; the status line reports the unsupported ones.
+- **Coordinates are never transformed.** Read as GDA2020 / MGA50 metres and checked against the site (within 50 km of E 384900 / N 6434050). Stray objects far outside are dropped and counted; if most of the drawing is out of range (local plant grid, mm-scaled export, another project's grid) the file is refused with its extents. Header units are ignored on purpose — the GT11 conduits DWG says mm but its numbers are metres.
+- Z of -999 (12d/Civil null) is read as 0.
+- Shared-storage uploads still stop at the ~3 MB ceiling (see custodian notes), so big DWGs load on screen but won't share.

@@ -11,11 +11,13 @@
   },
   "dependencies": {
     "@mapbox/mapbox-gl-draw": "^1.5.1",
+    "@mlightcad/libredwg-web": "^0.8.0",
     "@thatopen/components": "^3.4.8",
     "@thatopen/fragments": "^3.4.7",
     "@thatopen/ui": "^3.4.10",
     "@turf/turf": "^7.4.0",
     "@vercel/blob": "^2.8.0",
+    "dxf-parser": "^1.1.2",
     "mapbox-gl": "^3.29.0",
     "proj4": "^2.11.0",
     "three": "^0.185.1",
