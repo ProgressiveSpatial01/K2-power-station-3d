@@ -732,7 +732,12 @@ function continuesSmoothly(points, idx) {
   };
   const before = dirBefore();
   const after = dirAfter();
-  if (!before || !after) return false; // one-sided: nothing to confirm continuity against
+  // A gap with nothing (but one lone end vertex) beyond it can only ever
+  // cut off a 1-point piece, which mergeSinglePointOrphans() glues straight
+  // back on anyway — cutting it just first strands a collinear end leg as a
+  // 2-point stub once the recursion peels the line's end points off one by
+  // one (seen on real as-built LV conduits, 2026-10-13).
+  if (!before || !after) return true;
 
   const cosLimit = Math.cos((10 * Math.PI) / 180);
   const along = (d) => (d[0] * gx + d[1] * gy) / glen;
