@@ -687,7 +687,7 @@ export function splitOnGaps(points, opts = {}) {
       out.push([...item.box, item.box[0]]); // closed outline, like the lid shape in 12d
     } else {
       const pieces = splitOnWorstOutlier(item.run, absoluteThresholdM, relativeMultiplier, localWindow);
-      out.push(...mergeSinglePointOrphans(pieces));
+      out.push(...mergeSinglePointOrphans(pieces).map(completeThreeCornerLid));
     }
   }
   return out;
@@ -714,6 +714,28 @@ function isRectangle(points, i) {
   return (
     near(s[0], s[2]) && near(s[1], s[3]) && near(side(q[0], q[2]), side(q[1], q[3]))
   );
+}
+
+// A lid surveyed with only 3 corners (right angle at the middle one, sides
+// like a pit lid) is drawn as the full box rather than a bare "L" — otherwise
+// it sits half-open against the neighbouring lid and reads as the two being
+// joined (2026-10-13: the 4th corner is on-grid by definition for a
+// rectangle; in the real file one such lid's missing corner was even
+// recorded 1cm away, just out of sequence elsewhere in the same record).
+// Only right angles with 0.15-1.5m sides qualify, so a 3-point pipe bend
+// is left alone.
+function completeThreeCornerLid(piece) {
+  if (piece.length !== 3) return piece;
+  const [a, b, c] = piece;
+  const ab = [a[0] - b[0], a[1] - b[1]];
+  const cb = [c[0] - b[0], c[1] - b[1]];
+  const la = Math.hypot(...ab);
+  const lc = Math.hypot(...cb);
+  if (la < 0.15 || lc < 0.15 || la > 1.5 || lc > 1.5) return piece;
+  const cosA = (ab[0] * cb[0] + ab[1] * cb[1]) / (la * lc);
+  if (Math.abs(cosA) > Math.cos((82 * Math.PI) / 180)) return piece; // not within ~8° of 90°
+  const d = [a[0] + c[0] - b[0], a[1] + c[1] - b[1], a[2] + c[2] - b[2]];
+  return [a, b, c, d, a];
 }
 
 function extractRectangles(points) {
