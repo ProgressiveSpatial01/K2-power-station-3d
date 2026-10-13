@@ -238,6 +238,20 @@ function parseStatement(tokens, pos) {
   }
 
   const t1 = tokens[pos.i];
+  // Any other `key { <number> <number> ... }` block is a flat per-vertex/
+  // per-segment list too (2026-10-13: `vertex_visible_data` and
+  // `segment_visible_data`, written by newer exports with "Output
+  // drawables" on — the same unpaired-number desync as vertex_uid_data
+  // above, which made the whole GT11 conduits 12daz fail to parse). A
+  // real key/value block never opens with a bare number (keys are
+  // non-numeric atoms), so peeking at the first token is a safe, general
+  // catch instead of whitelisting each new list name one export at a time.
+  if (
+    t1 && t1.type === "BRACE" && t1.value === "{" &&
+    tokens[pos.i + 1]?.type === "ATOM" && /^[-+]?(\d|\.\d)/.test(tokens[pos.i + 1].value)
+  ) {
+    return { key, value: readFlatNumberList(tokens, pos) };
+  }
   if (t1 && t1.type === "BRACE" && t1.value === "{") {
     pos.i++;
     const value = parseBlock(tokens, pos);
@@ -675,6 +689,56 @@ function median(values) {
   return sorted.length % 2 === 0 ? (sorted[mid - 1] + sorted[mid]) / 2 : sorted[mid];
 }
 
+// 2026-10-13: Cameron's new GT11 conduits (loaded as services) had a
+// straight leg dropped from 26 of 89 conduits. Each is a dense R1.2m bend
+// (vertices ~0.1m apart) running into a 5-8m straight leg — to the
+// distance heuristic that leg is a huge outlier, but the leg IS the pipe:
+// it leaves the bend's last chord dead straight and arrives at the next
+// run's first chord dead straight. A real boundary between two unrelated
+// features (one manhole's rim to the next, a different pit) jumps off in
+// an arbitrary direction relative to both clusters. So a gap that lines up
+// with the line's direction on BOTH sides (within 10°, enough to absorb a
+// 10° arc-sampling step) is a smooth continuation, not a break.
+function continuesSmoothly(points, idx) {
+  const MIN_CHORD = 0.03; // ignore near-duplicate vertices when taking a direction
+  const [ax, ay] = points[idx];
+  const [bx, by] = points[idx + 1];
+  const gx = bx - ax;
+  const gy = by - ay;
+  const glen = Math.hypot(gx, gy);
+  // A genuinely long jump that merely happens to line up (a manhole 105m
+  // due north of the previous one, rims both grid-aligned) is still a
+  // boundary — only short legs, the length a bend-to-bend straight
+  // actually is, get the benefit of the doubt.
+  if (glen === 0 || glen > 30) return false;
+
+  const dirBefore = () => {
+    for (let i = idx - 1; i >= 0; i--) {
+      const dx = ax - points[i][0];
+      const dy = ay - points[i][1];
+      const l = Math.hypot(dx, dy);
+      if (l >= MIN_CHORD) return [dx / l, dy / l];
+    }
+    return null;
+  };
+  const dirAfter = () => {
+    for (let i = idx + 2; i < points.length; i++) {
+      const dx = points[i][0] - bx;
+      const dy = points[i][1] - by;
+      const l = Math.hypot(dx, dy);
+      if (l >= MIN_CHORD) return [dx / l, dy / l];
+    }
+    return null;
+  };
+  const before = dirBefore();
+  const after = dirAfter();
+  if (!before || !after) return false; // one-sided: nothing to confirm continuity against
+
+  const cosLimit = Math.cos((10 * Math.PI) / 180);
+  const along = (d) => (d[0] * gx + d[1] * gy) / glen;
+  return along(before) >= cosLimit && along(after) >= cosLimit;
+}
+
 function splitOnWorstOutlier(points, absoluteThresholdM, relativeMultiplier, localWindow) {
   if (points.length <= 2) return [points]; // nothing to compare a single gap's ratio against
 
@@ -685,24 +749,29 @@ function splitOnWorstOutlier(points, absoluteThresholdM, relativeMultiplier, loc
     dists.push(Math.hypot(x2 - x1, y2 - y1));
   }
 
-  let worstIdx = 0;
-  for (let i = 1; i < dists.length; i++) {
-    if (dists[i] > dists[worstIdx]) worstIdx = i;
+  // Candidate gaps worst-first. The worst one failing the thresholds ends
+  // the search (same as before); one that passes them but is a smooth
+  // straight continuation of the line (see continuesSmoothly()) is skipped
+  // and the next-worst is tried instead.
+  const order = dists.map((_, i) => i).sort((a, b) => dists[b] - dists[a]);
+  let worstIdx = -1;
+  for (const idx of order) {
+    let baseline;
+    if (dists.length >= 3 * localWindow) {
+      const lo = Math.max(0, idx - localWindow);
+      const hi = Math.min(dists.length - 1, idx + localWindow);
+      const nearby = [];
+      for (let i = lo; i <= hi; i++) if (i !== idx) nearby.push(dists[i]);
+      baseline = nearby.length ? median(nearby) : dists[idx];
+    } else {
+      baseline = median(dists);
+    }
+    if (!(dists[idx] > absoluteThresholdM && dists[idx] > baseline * relativeMultiplier)) break;
+    if (continuesSmoothly(points, idx)) continue;
+    worstIdx = idx;
+    break;
   }
-
-  let baseline;
-  if (dists.length >= 3 * localWindow) {
-    const lo = Math.max(0, worstIdx - localWindow);
-    const hi = Math.min(dists.length - 1, worstIdx + localWindow);
-    const nearby = [];
-    for (let i = lo; i <= hi; i++) if (i !== worstIdx) nearby.push(dists[i]);
-    baseline = nearby.length ? median(nearby) : dists[worstIdx];
-  } else {
-    baseline = median(dists);
-  }
-
-  const isSplit = dists[worstIdx] > absoluteThresholdM && dists[worstIdx] > baseline * relativeMultiplier;
-  if (!isSplit) return [points];
+  if (worstIdx < 0) return [points];
 
   const left = points.slice(0, worstIdx + 1);
   const right = points.slice(worstIdx + 1);
