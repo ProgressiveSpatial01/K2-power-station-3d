@@ -679,8 +679,66 @@ async function extractFirstZipEntry(buf) {
 export function splitOnGaps(points, opts = {}) {
   const { absoluteThresholdM = 3, relativeMultiplier = 8, localWindow = 4 } = opts;
   if (points.length === 0) return [];
-  const pieces = splitOnWorstOutlier(points, absoluteThresholdM, relativeMultiplier, localWindow);
-  return mergeSinglePointOrphans(pieces);
+  // Pit/manhole lids first (see extractRectangles()): exact, so they never
+  // reach the distance guessing below, which can only ever approximate them.
+  const out = [];
+  for (const item of extractRectangles(points)) {
+    if (item.box) {
+      out.push([...item.box, item.box[0]]); // closed outline, like the lid shape in 12d
+    } else {
+      const pieces = splitOnWorstOutlier(item.run, absoluteThresholdM, relativeMultiplier, localWindow);
+      out.push(...mergeSinglePointOrphans(pieces));
+    }
+  }
+  return out;
+}
+
+// 2026-10-13: survey pits/manholes/grates arrive as ONE record holding many
+// lids back-to-back, each lid just its 4 corner points (0.3-1m sides) with
+// no marker between lids and no closing point. Distance heuristics can't
+// separate those reliably — neighbouring lids sit anywhere from 0.1m to
+// 190m apart, so some got joined to the next by a long spurious line and
+// others didn't (Cameron: "some do, some dont ... in 12d they are just a
+// box representing the lid shape"). A lid IS identifiable exactly: 4
+// consecutive points that make a rectangle (opposite sides equal, equal
+// diagonals, i.e. right angles, in perimeter order). Each becomes its own
+// closed box; points that aren't part of a rectangle are returned as runs
+// for the normal gap logic, so a record with no rectangles behaves exactly
+// as before. Sides limited to 0.15-3m so a 4-vertex pipe jog can't match.
+function isRectangle(points, i) {
+  const q = [points[i], points[i + 1], points[i + 2], points[i + 3]];
+  const side = (a, b) => Math.hypot(a[0] - b[0], a[1] - b[1]);
+  const s = [side(q[0], q[1]), side(q[1], q[2]), side(q[2], q[3]), side(q[3], q[0])];
+  if (s.some((v) => v < 0.15 || v > 3)) return false;
+  const near = (a, b) => Math.abs(a - b) <= 0.12 * Math.max(a, b);
+  return (
+    near(s[0], s[2]) && near(s[1], s[3]) && near(side(q[0], q[2]), side(q[1], q[3]))
+  );
+}
+
+function extractRectangles(points) {
+  const items = [];
+  let run = [];
+  let i = 0;
+  while (i < points.length) {
+    if (i + 3 < points.length && isRectangle(points, i)) {
+      if (run.length) {
+        items.push({ run });
+        run = [];
+      }
+      const box = points.slice(i, i + 4);
+      items.push({ box });
+      i += 4;
+      // Some lids are already written closed (a 5th point back on corner 1).
+      const c = points[i];
+      if (c && Math.hypot(c[0] - box[0][0], c[1] - box[0][1]) < 0.05) i++;
+    } else {
+      run.push(points[i]);
+      i++;
+    }
+  }
+  if (run.length) items.push({ run });
+  return items;
 }
 
 function median(values) {
