@@ -146,8 +146,9 @@ async function getIfcEngine() {
 }
 
 const layerTreeEl = document.getElementById("layer-tree");
-const baseGroup = createLayerGroup(layerTreeEl, { label: "Base Map" });
-const designGroup = createLayerGroup(layerTreeEl, { label: "Design", key: "design" });
+// Top-level groups start collapsed (2026-10-14, per Cameron) so the panel opens as a short, tidy list.
+const baseGroup = createLayerGroup(layerTreeEl, { label: "Base Map", defaultOpen: false });
+const designGroup = createLayerGroup(layerTreeEl, { label: "Design", key: "design", defaultOpen: false });
 // "Linework" nests inside "Design" (alongside the IFC base point/footprint
 // row added elsewhere) — per Cameron (2026-08-26): the Design upload needs
 // to support linework, .ifc, and (eventually) surfaces as different kinds
@@ -172,6 +173,7 @@ const designSurfaceGroup = designGroup.addSubgroup({
 });
 const servicesGroup = createLayerGroup(layerTreeEl, {
   key: "services",
+  defaultOpen: false,
   label: "Underground Services",
   onDelete: () => servicesController.removeAll(),
 });

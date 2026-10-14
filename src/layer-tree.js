@@ -249,7 +249,7 @@ export function enableLayerOrganiser(container) {
   btn.addEventListener("click", () => createUserGroup(null));
   container.before(btn);
   for (const def of [...org.defs.values()]) {
-    if (def.parent === null && !org.live.has(def.id)) createLayerGroup(container, { label: def.label, _user: def });
+    if (def.parent === null && !org.live.has(def.id)) createLayerGroup(container, { label: def.label, defaultOpen: false, _user: def });
   }
 }
 
@@ -615,7 +615,7 @@ export function createLayerGroup(container, opts = {}) {
   // Recreate saved custom groups that belong inside this one.
   if (_user || key) {
     for (const def of [...org.defs.values()]) {
-      if (def.parent === node.groupId && !org.live.has(def.id)) api.addSubgroup({ label: def.label, _user: def });
+      if (def.parent === node.groupId && !org.live.has(def.id)) api.addSubgroup({ label: def.label, defaultOpen: false, _user: def });
     }
   }
 

@@ -74,10 +74,10 @@ const SCENE_ORIGIN_MGA = [384899.031, 6434081.091, 5.55]; // [easting, northing,
 // do need `world.scene.three` to parent objects into) are created once
 // `main()` has set the world up, and handed out via `ctx`.
 const layerTreeEl = document.getElementById("layer-tree");
-const designGroup = createLayerGroup(layerTreeEl, { label: "Design", key: "design" });
+const designGroup = createLayerGroup(layerTreeEl, { label: "Design", key: "design", defaultOpen: false });
 const designLineworkGroup = designGroup.addSubgroup({ label: "Linework", key: "design-linework" });
 const designSurfaceGroup = designGroup.addSubgroup({ label: "Surfaces", key: "design-surfaces" });
-const servicesGroup = createLayerGroup(layerTreeEl, { label: "Underground Services", key: "services" });
+const servicesGroup = createLayerGroup(layerTreeEl, { label: "Underground Services", key: "services", defaultOpen: false });
 enableLayerOrganiser(layerTreeEl);
 
 wireHudToggle();
