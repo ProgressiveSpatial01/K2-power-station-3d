@@ -73,6 +73,17 @@
         font-size: 10px; text-transform: uppercase; letter-spacing: 0.06em;
         color: #8a8f98; margin: 0 0 6px;
       }
+      .shared-details > summary {
+        cursor: pointer; font-size: 10px; letter-spacing: 0.06em; text-transform: uppercase;
+        color: #8a8f98; list-style: none; user-select: none;
+      }
+      .shared-details > summary::-webkit-details-marker { display: none; }
+      .shared-details > summary::before { content: "▸ "; }
+      .shared-details[open] > summary::before { content: "▾ "; }
+      .shared-details > summary:hover { color: #ccc; }
+      .shared-details > #shared-files-list { margin-top: 8px; }
+      #add-data-section { margin-top: 12px; padding-top: 10px; border-top: 1px solid #2c2e31; }
+
       #custodian-toggle {
         margin-top: 8px; width: 100%; font-size: 11px; padding: 6px 0;
         background: #1c1e21; border: 1px solid #3a3d42; border-radius: 4px; color: #ccc; cursor: pointer;
@@ -170,32 +181,30 @@
         <div id="status">Loading terrain…</div>
 
         <div class="hud-section">
+          <h2>Layers</h2>
+          <div id="layer-tree"></div>
+        </div>
+        <div class="hud-section">
           <h2>Selected Element</h2>
           <div id="element-info">
             <p class="shared-files-empty">Click a concrete/IFC element in the 3D view to see its details.</p>
           </div>
         </div>
 
-        <div class="hud-section">
-          <h2>Shared Data</h2>
+        <details id="shared-data-details" class="hud-section shared-details">
+          <summary>Shared Data</summary>
           <div id="shared-files-list">
             <p class="shared-files-empty">Nothing shared yet.</p>
           </div>
           <button id="custodian-toggle" type="button">🔒 Unlock custodian mode</button>
-        </div>
-
-        <div id="add-data-section" class="hud-section" style="display: none;">
-          <h2>Add Data</h2>
-          <label for="design-input">Design (.ifc / .12da / .12daz / .dxf / .dwg)</label>
-          <input id="design-input" type="file" accept=".ifc,.12da,.12daz,.dxf,.dwg" />
-          <label for="services-input">12d services (.12da / .12daz)</label>
-          <input id="services-input" type="file" accept=".12da,.12daz" />
-        </div>
-
-        <div class="hud-section">
-          <h2>Layers</h2>
-          <div id="layer-tree"></div>
-        </div>
+          <div id="add-data-section" style="display: none;">
+            <h2>Add Data</h2>
+            <label for="design-input">Design (.ifc / .12da / .12daz / .dxf / .dwg)</label>
+            <input id="design-input" type="file" accept=".ifc,.12da,.12daz,.dxf,.dwg" />
+            <label for="services-input">12d services (.12da / .12daz)</label>
+            <input id="services-input" type="file" accept=".12da,.12daz" />
+          </div>
+        </details>
       </div>
     </div>
     <script type="module" src="/src/main.js"></script>

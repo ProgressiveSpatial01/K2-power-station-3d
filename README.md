@@ -1220,3 +1220,9 @@ load without error after the rename/deletions.
 - **Coordinates are never transformed.** Read as GDA2020 / MGA50 metres and checked against the site (within 50 km of E 384900 / N 6434050). Stray objects far outside are dropped and counted; if most of the drawing is out of range (local plant grid, mm-scaled export, another project's grid) the file is refused with its extents. Header units are ignored on purpose — the GT11 conduits DWG says mm but its numbers are metres.
 - Z of -999 (12d/Civil null) is read as 0.
 - Shared-storage uploads still stop at the ~3 MB ceiling (see custodian notes), so big DWGs load on screen but won't share.
+
+### Sidebar layout + custom layer groups (2026-10-14)
+
+Per Cameron: Layers now sit at the top of the sidebar/HUD (2D and 3D); **Shared Data** (list, custodian unlock, Add Data) is a collapsed `<details>` at the very bottom and opens itself when custodian mode is unlocked.
+
+Custom groups live in `layer-tree.js` (see its header): a **＋ New group** button above the tree, a ＋ on every user/stable group for nesting, a group checkbox that cascades, rename, and ✕ (removes the group only — layers go back, nothing is deleted). Layers move by **dragging onto a group** (desktop) or the **⇄ button's menu** (works on touch). Only rows given a stable `key` are movable (services `svc:<model path>`, design linework `dl:<model path>`, surfaces `surf:<id>`, IFC `ifc:<id>`; Base Map radios aren't). Controllers rebuild their trees whenever a new model arrives, so the arrangement is stored as `{row key → group}` in this browser's localStorage (`k2-layer-organisation-v1`, shared by the 2D and 3D pages, not by other visitors/devices) and applied inside `addRow()`; `clear()` now removes only what the rebuilding controller made (by origin) and leaves custom groups alone. A model path that gets reworded just returns to its original place.

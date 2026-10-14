@@ -21,7 +21,7 @@ import { buildServiceMeshes } from "./services.js";
 import { buildSurfaceMeshes } from "./surfaces-3d.js";
 import { buildDesignLineworkMeshes } from "./design-linework-3d.js";
 import { roundTripCheck, mgaToScene } from "./crs.js";
-import { createLayerGroup } from "./layer-tree.js";
+import { createLayerGroup, enableLayerOrganiser } from "./layer-tree.js";
 import { buildModelTree } from "./model-tree.js";
 import {
   getCustodianSecret,
@@ -74,10 +74,11 @@ const SCENE_ORIGIN_MGA = [384899.031, 6434081.091, 5.55]; // [easting, northing,
 // do need `world.scene.three` to parent objects into) are created once
 // `main()` has set the world up, and handed out via `ctx`.
 const layerTreeEl = document.getElementById("layer-tree");
-const designGroup = createLayerGroup(layerTreeEl, { label: "Design" });
-const designLineworkGroup = designGroup.addSubgroup({ label: "Linework" });
-const designSurfaceGroup = designGroup.addSubgroup({ label: "Surfaces" });
-const servicesGroup = createLayerGroup(layerTreeEl, { label: "Underground Services" });
+const designGroup = createLayerGroup(layerTreeEl, { label: "Design", key: "design" });
+const designLineworkGroup = designGroup.addSubgroup({ label: "Linework", key: "design-linework" });
+const designSurfaceGroup = designGroup.addSubgroup({ label: "Surfaces", key: "design-surfaces" });
+const servicesGroup = createLayerGroup(layerTreeEl, { label: "Underground Services", key: "services" });
+enableLayerOrganiser(layerTreeEl);
 
 wireHudToggle();
 
@@ -128,7 +129,7 @@ function wireHudToggle() {
  *
  * @param {{ sidebarGroup: ReturnType<typeof createLayerGroup>, sceneRoot: import("three").Object3D }} deps
  */
-function createModelGroupedLayerController({ sidebarGroup, sceneRoot }) {
+function createModelGroupedLayerController({ sidebarGroup, sceneRoot, keyPrefix }) {
   const knownModelPaths = new Set();
   const modelGroups = new Map(); // modelPath -> THREE.Group, a direct child of sceneRoot
   const checkedGroups = new Set();
@@ -158,6 +159,7 @@ function createModelGroupedLayerController({ sidebarGroup, sceneRoot }) {
     for (const node of nodes) {
       if (node.type === "leaf") {
         g.addRow({
+          key: `${keyPrefix}:${node.fullPath}`,
           label: node.label,
           color: colourForModel(node.fullPath),
           checked: checkedGroups.has(node.fullPath),
@@ -203,8 +205,9 @@ function createModelGroupedLayerController({ sidebarGroup, sceneRoot }) {
  * object's visibility — for IFC designs and 12d surfaces, matching how
  * the 2D page treats those two: one row per upload, not a tree.
  */
-function addFlatLayerRow(sidebarGroup, { label, color, object }) {
+function addFlatLayerRow(sidebarGroup, { label, color, object, key }) {
   sidebarGroup.addRow({
+    key,
     label,
     color,
     checked: true,
@@ -371,10 +374,11 @@ async function main() {
   // built here, once, now that `world` exists (see the module-scope
   // comment above createModelGroupedLayerController() for why the
   // sidebar DOM itself was built earlier without waiting on this).
-  const servicesLayers = createModelGroupedLayerController({ sidebarGroup: servicesGroup, sceneRoot: world.scene.three });
+  const servicesLayers = createModelGroupedLayerController({ sidebarGroup: servicesGroup, sceneRoot: world.scene.three, keyPrefix: "svc" });
   const designLineworkLayers = createModelGroupedLayerController({
     sidebarGroup: designLineworkGroup,
     sceneRoot: world.scene.three,
+    keyPrefix: "dl",
   });
 
   const ctx = { components, ifcLoader, world, terrainState, servicesLayers, designLineworkLayers };
@@ -482,7 +486,7 @@ async function handleIfcFile(file, ctx, opts = {}) {
     // doesn't nest IFC designs into a model-path tree either (only
     // services/design-linework do, since only those come as many small
     // records each carrying a real 12d `model` path).
-    addFlatLayerRow(designGroup, { label: file.name, color: "#ffb454", object: model.object });
+    addFlatLayerRow(designGroup, { key: `ifc:${file.name}`, label: file.name, color: "#ffb454", object: model.object });
     if (!opts.skipSharing) await shareIfCustodian("design", file, null);
   } catch (err) {
     console.error(err);
@@ -528,6 +532,7 @@ async function handleDesign12dFile(file, ctx, opts = {}) {
       for (const mesh of [...group.children]) {
         ctx.world.scene.three.add(mesh); // reparents out of the now-discarded flat `group`
         addFlatLayerRow(designSurfaceGroup, {
+          key: `surf:${mesh.userData.surfaceId ?? mesh.name}`,
           label: mesh.userData.surfaceId ?? mesh.name,
           color: `#${mesh.material.color.getHexString()}`,
           object: mesh,
@@ -666,6 +671,7 @@ function wireCustodianMode() {
     if (entered) {
       setCustodianSecret(entered);
       applyUnlockedState();
+      document.getElementById("shared-data-details")?.setAttribute("open", ""); // reveal the uploads that just unlocked
     }
   });
 

@@ -35,7 +35,7 @@ import {
 import { loadTwelveDaFile, splitOnGaps, isConfirmedContinuousServiceRecord } from "./twelve-d.js";
 import { isCadFileName, loadCadFile, describeCadSkips } from "./cad-import.js";
 import { normalizeColour } from "./service-colour.js";
-import { createLayerGroup } from "./layer-tree.js";
+import { createLayerGroup, enableLayerOrganiser } from "./layer-tree.js";
 import { buildModelTree } from "./model-tree.js";
 import { createDrawTools } from "./draw-tools.js";
 import { renderProfileChart } from "./profile-chart.js";
@@ -147,7 +147,7 @@ async function getIfcEngine() {
 
 const layerTreeEl = document.getElementById("layer-tree");
 const baseGroup = createLayerGroup(layerTreeEl, { label: "Base Map" });
-const designGroup = createLayerGroup(layerTreeEl, { label: "Design" });
+const designGroup = createLayerGroup(layerTreeEl, { label: "Design", key: "design" });
 // "Linework" nests inside "Design" (alongside the IFC base point/footprint
 // row added elsewhere) — per Cameron (2026-08-26): the Design upload needs
 // to support linework, .ifc, and (eventually) surfaces as different kinds
@@ -158,6 +158,7 @@ const designGroup = createLayerGroup(layerTreeEl, { label: "Design" });
 // body only ever RUNS when a user clicks that group's delete button,
 // long after the whole module has finished initialising.
 const designLineworkGroup = designGroup.addSubgroup({
+  key: "design-linework",
   label: "Linework",
   onDelete: () => designLineworkController.removeAll(),
 });
@@ -165,14 +166,17 @@ const designLineworkGroup = designGroup.addSubgroup({
 // same Design upload slot, a third kind of design data alongside IFC and
 // linework. See buildSurfaceFeaturesFrom12d() below for the file format.
 const designSurfaceGroup = designGroup.addSubgroup({
+  key: "design-surfaces",
   label: "Surfaces",
   onDelete: () => designSurfaceController.removeAll(),
 });
 const servicesGroup = createLayerGroup(layerTreeEl, {
+  key: "services",
   label: "Underground Services",
   onDelete: () => servicesController.removeAll(),
 });
 
+enableLayerOrganiser(layerTreeEl);
 wireBaseStyleGroup();
 wireSidebarToggle();
 
@@ -496,6 +500,7 @@ function createIfcFeatureController({ group }) {
           subgroupMembers.delete(name);
         });
         const input = targetGroup.addRow({
+          key: `ifc:${ifcId}`,
           label: ifcId,
           color: "#ffb454",
           checked: true,
@@ -633,7 +638,7 @@ function findNearestPointFeature(features, lngLat, toleranceM) {
   return bestDist <= toleranceM ? best : null;
 }
 
-function createLineFeatureController({ sourceId, layerId, group, popupHtml }) {
+function createLineFeatureController({ sourceId, layerId, group, popupHtml, keyPrefix }) {
   const allFeatures = [];
   const knownModelPaths = new Set();
   const checkedGroups = new Set();
@@ -678,6 +683,7 @@ function createLineFeatureController({ sourceId, layerId, group, popupHtml }) {
     for (const node of nodes) {
       if (node.type === "leaf") {
         g.addRow({
+          key: `${keyPrefix}:${node.fullPath}`,
           label: node.label,
           color: colourForModel(node.fullPath),
           checked: checkedGroups.has(node.fullPath),
@@ -816,6 +822,7 @@ function createLineFeatureController({ sourceId, layerId, group, popupHtml }) {
 const servicesController = createLineFeatureController({
   sourceId: "services-12d",
   layerId: "services-12d-layer",
+  keyPrefix: "svc",
   group: servicesGroup,
   popupHtml: (p) =>
     `<b>${p.name ?? "Service"}</b><br>${p.model ?? ""} (style ${p.style ?? "?"})<br>` +
@@ -827,6 +834,7 @@ const servicesController = createLineFeatureController({
 const designLineworkController = createLineFeatureController({
   sourceId: "design-linework",
   layerId: "design-linework-layer",
+  keyPrefix: "dl",
   group: designLineworkGroup,
   popupHtml: (p) =>
     `<b>${p.name ?? "Design line"}</b><br>${p.model ?? ""} (style ${p.style ?? "?"})<br>` +
@@ -1032,6 +1040,7 @@ function createSurfaceFeatureController({ sourceId, fillLayerId, lineLayerId, gr
       // in-view surface toggles too (see wireMapToolbar()'s onSectionLine).
       added = true;
       const input = targetGroup.addRow({
+        key: `surf:${id}`,
         label: id,
         color: f.properties.colour,
         checked: false,
@@ -1290,6 +1299,7 @@ function wireCustodianMode() {
     if (entered) {
       setCustodianSecret(entered);
       applyUnlockedState();
+      document.getElementById("shared-data-details")?.setAttribute("open", ""); // reveal the uploads that just unlocked
     }
   });
 

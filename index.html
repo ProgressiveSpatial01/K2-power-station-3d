@@ -54,6 +54,22 @@
       }
       .panel-section input[type="text"].subgroup-input::placeholder { color: #666; }
 
+      /* Shared Data now sits at the very bottom of the sidebar, collapsed
+         (2026-10-14, per Cameron: "i am probably the only person who will
+         ever use it, so can be well out of the way"). */
+      .shared-details { border-bottom: none; border-top: 1px solid #2c2e31; margin-top: 12px; }
+      .shared-details > summary {
+        cursor: pointer; font-size: 11px; letter-spacing: 0.06em; text-transform: uppercase;
+        color: #8a8f98; list-style: none; user-select: none;
+      }
+      .shared-details > summary::-webkit-details-marker { display: none; }
+      .shared-details > summary::before { content: "▸ "; }
+      .shared-details[open] > summary::before { content: "▾ "; }
+      .shared-details > summary:hover { color: #ccc; }
+      .shared-details > #shared-files-list { margin-top: 8px; }
+      #add-data-section { margin-top: 12px; padding-top: 10px; border-top: 1px solid #26282b; }
+      #add-data-section h2 { font-size: 11px; text-transform: uppercase; letter-spacing: 0.06em; color: #8a8f98; margin: 0 0 4px; }
+
       #custodian-toggle {
         margin-top: 8px; width: 100%; font-size: 11px; padding: 6px 0;
         background: #1c1e21; border: 1px solid #3a3d42; border-radius: 4px; color: #ccc; cursor: pointer;
@@ -279,30 +295,30 @@
         <div id="status-bar">Loading map…</div>
         <div id="sidebar-scroll">
           <section class="panel-section">
-            <h2>Shared Data</h2>
+            <h2>Layers</h2>
+            <div id="layer-tree"></div>
+          </section>
+          <details id="shared-data-details" class="panel-section shared-details">
+            <summary>Shared Data</summary>
             <div id="shared-files-list">
               <p class="shared-files-empty">Nothing shared yet.</p>
             </div>
             <button id="custodian-toggle" type="button">🔒 Unlock custodian mode</button>
-          </section>
-          <section id="add-data-section" class="panel-section" style="display: none;">
-            <h2>Add Data</h2>
-            <label class="file-label" for="design-input">Design (.ifc / .12da / .12daz / .dxf / .dwg)</label>
-            <input id="design-input" type="file" accept=".ifc,.12da,.12daz,.dxf,.dwg" />
-            <input
-              id="design-subgroup"
-              type="text"
-              class="subgroup-input"
-              placeholder="Subgroup (optional, e.g. &quot;Structural&quot;)"
-              title="Applies to the next Design file you choose above — IFC designs and surfaces (design linework groups itself by its own 12d model paths already)."
-            />
-            <label class="file-label" for="services-input">12d services (.12da / .12daz)</label>
-            <input id="services-input" type="file" accept=".12da,.12daz" />
-          </section>
-          <section class="panel-section">
-            <h2>Layers</h2>
-            <div id="layer-tree"></div>
-          </section>
+            <div id="add-data-section" style="display: none;">
+              <h2>Add Data</h2>
+              <label class="file-label" for="design-input">Design (.ifc / .12da / .12daz / .dxf / .dwg)</label>
+              <input id="design-input" type="file" accept=".ifc,.12da,.12daz,.dxf,.dwg" />
+              <input
+                id="design-subgroup"
+                type="text"
+                class="subgroup-input"
+                placeholder="Subgroup (optional, e.g. &quot;Structural&quot;)"
+                title="Applies to the next Design file you choose above — IFC designs and surfaces (design linework groups itself by its own 12d model paths already)."
+              />
+              <label class="file-label" for="services-input">12d services (.12da / .12daz)</label>
+              <input id="services-input" type="file" accept=".12da,.12daz" />
+            </div>
+          </details>
         </div>
       </aside>
       <div id="map-area">
