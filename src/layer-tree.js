@@ -177,6 +177,7 @@ function moveEntry(entry, target) {
   if (!target || target === entry.holder) return;
   entry.holder.release(entry);
   target.adopt(entry);
+  target.open?.(); // show where it landed, even if that group was collapsed
   if (target === entry.origin) org.assign.delete(entry.key);
   else org.assign.set(entry.key, target.groupId);
   saveOrg();
@@ -257,8 +258,8 @@ function createUserGroup(parentId) {
   const def = { id: newUserGroupId(), label: "New group", parent: parentId };
   org.defs.set(def.id, def);
   saveOrg();
-  if (parentId === null) createLayerGroup(org.rootContainer, { label: def.label, _user: def });
-  else org.live.get(parentId)?.api.addSubgroup({ label: def.label, _user: def });
+  if (parentId === null) createLayerGroup(org.rootContainer, { label: def.label, defaultOpen: true, _user: def });
+  else org.live.get(parentId)?.api.addSubgroup({ label: def.label, defaultOpen: true, _user: def });
 }
 
 /**
@@ -274,7 +275,7 @@ function createUserGroup(parentId) {
  *   once at page start, never to groups a controller rebuilds.
  */
 export function createLayerGroup(container, opts = {}) {
-  const { label, defaultOpen = true, onDelete = null, key = null, _user = null, _parent = null } = opts;
+  const { label, defaultOpen = false, onDelete = null, key = null, _user = null, _parent = null } = opts;
   loadOrg();
 
   const group = document.createElement("div");
@@ -379,6 +380,10 @@ export function createLayerGroup(container, opts = {}) {
     entry.applyParentEnabled(effectiveOn());
   };
   node.release = (entry) => forgetChild(entry);
+  node.open = () => {
+    body.style.display = "block";
+    caret.textContent = "▾";
+  };
 
   // --- drop target (desktop drag and drop onto a keyed or user group) ---
   if (_user || key) {
@@ -536,7 +541,7 @@ export function createLayerGroup(container, opts = {}) {
      * @param {{ onDelete?: () => void }} [opts.onDelete] - deletes this
      *   whole subgroup's contents at once — see file header.
      */
-    addSubgroup({ label, defaultOpen = true, onDelete = null, key: subKey = null, _user: userDef = null } = {}) {
+    addSubgroup({ label, defaultOpen = false, onDelete = null, key: subKey = null, _user: userDef = null } = {}) {
       const subOnDelete = onDelete
         ? () => {
             onDelete();
