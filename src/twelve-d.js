@@ -157,6 +157,16 @@ function parseHexOrDecimalNumber(str) {
   return sign ? -value : value;
 }
 
+// 12d's "Use null keyword for null values" export option writes a missing
+// value as the literal word `null` instead of its numeric null (-999). First
+// seen 2026-11-03: a new gas-easement model ("BYD/Gas", 9 vertices) with no
+// elevation, which threw "expected number, got null" and failed the whole
+// weekly upload. Kept as JS null here; parse12da() turns a null elevation
+// into 0 (no elevation) and drops any vertex whose E/N is null.
+function parseNumberOrNull(str) {
+  return str === "null" ? null : parseStrictNumber(str);
+}
+
 function readNumberRow(tokens, pos, rowLength, parseNum = parseStrictNumber) {
   expectBrace(tokens, pos, "{");
   const rows = [];
@@ -194,7 +204,7 @@ function parseStatement(tokens, pos) {
   const key = keyTok.value;
 
   if (key === "data_3d") {
-    return { key, value: readNumberRow(tokens, pos, 3) };
+    return { key, value: readNumberRow(tokens, pos, 3, parseNumberOrNull) };
   }
   if (key === "data_2d") {
     // 2D-only points (symbol pickups etc. with no elevation) — not used by
@@ -464,7 +474,9 @@ export function parse12da(text) {
     }
     const diameter = diameterRaw != null ? Number(diameterRaw) : null;
     const justify = s.justify ?? null;
-    const points = (s.data_3d ?? []).map(([e, n, z]) => [e, n, z]);
+    const points = (s.data_3d ?? [])
+      .filter(([e, n]) => e !== null && n !== null)
+      .map(([e, n, z]) => [e, n, z ?? 0]);
 
     let centrelinePoints = points;
     if (diameter != null && justify && JUSTIFY_TO_CENTRE_OFFSET[justify]) {
@@ -686,7 +698,10 @@ export function splitOnGaps(points, opts = {}) {
     if (item.box) {
       out.push([...item.box, item.box[0]]); // closed outline, like the lid shape in 12d
     } else {
-      const pieces = splitOnWorstOutlier(item.run, absoluteThresholdM, relativeMultiplier, localWindow);
+      const pieces =
+        item.run.length < MIN_POINTS_TO_SPLIT
+          ? [item.run]
+          : splitOnWorstOutlier(item.run, absoluteThresholdM, relativeMultiplier, localWindow);
       out.push(...mergeSinglePointOrphans(pieces).map(completeThreeCornerLid));
     }
   }
@@ -777,8 +792,10 @@ function median(values) {
 // run's first chord dead straight. A real boundary between two unrelated
 // features (one manhole's rim to the next, a different pit) jumps off in
 // an arbitrary direction relative to both clusters. So a gap that lines up
-// with the line's direction on BOTH sides (within 10°, enough to absorb a
-// 10° arc-sampling step) is a smooth continuation, not a break.
+// with the line's direction on BOTH sides (within 20°: an as-built bend with
+// few vertices turns 15-20° per chord, so its first chord can be that far off
+// the straight it leaves — found 2026-11-03 on real as-built LV conduits) is a
+// smooth continuation, not a break.
 function continuesSmoothly(points, idx) {
   const MIN_CHORD = 0.03; // ignore near-duplicate vertices when taking a direction
   const [ax, ay] = points[idx];
@@ -819,10 +836,32 @@ function continuesSmoothly(points, idx) {
   // one (seen on real as-built LV conduits, 2026-10-13).
   if (!before || !after) return true;
 
-  const cosLimit = Math.cos((10 * Math.PI) / 180);
+  const cosLimit = Math.cos((20 * Math.PI) / 180);
   const along = (d) => (d[0] * gx + d[1] * gy) / glen;
   return along(before) >= cosLimit && along(after) >= cosLimit;
 }
+
+// 2026-11-03: a gap right next to a LONG segment (>10m) is part of a long
+// linear feature, not a boundary between tiny survey clusters — a gas
+// easement boundary (legs of 174-538m plus a few 0.1-1m jogs) had a 174m leg
+// cut off by the distance test. Pit/manhole concatenations never look like
+// that: their cuts are between clusters whose own segments are all sub-metre
+// to a few metres. "Missing services" is the worse failure here (a spurious
+// join is visible and obviously wrong; a missing line silently isn't), so
+// when in doubt the line is kept.
+const LONG_SEGMENT_M = 10;
+function sitsOnLongLine(points, idx) {
+  const seg = (i) =>
+    i >= 0 && i + 1 < points.length
+      ? Math.hypot(points[i + 1][0] - points[i][0], points[i + 1][1] - points[i][1])
+      : 0;
+  return seg(idx - 1) > LONG_SEGMENT_M || seg(idx + 1) > LONG_SEGMENT_M;
+}
+
+// A run this short can't be several concatenated features (those are 4-corner
+// lids, taken exactly by extractRectangles() before this runs), but it can be
+// one real line with a stub or a dogleg: 12d draws it joined, so do we.
+const MIN_POINTS_TO_SPLIT = 7;
 
 function splitOnWorstOutlier(points, absoluteThresholdM, relativeMultiplier, localWindow) {
   if (points.length <= 2) return [points]; // nothing to compare a single gap's ratio against
@@ -853,6 +892,7 @@ function splitOnWorstOutlier(points, absoluteThresholdM, relativeMultiplier, loc
     }
     if (!(dists[idx] > absoluteThresholdM && dists[idx] > baseline * relativeMultiplier)) break;
     if (continuesSmoothly(points, idx)) continue;
+    if (sitsOnLongLine(points, idx)) continue;
     worstIdx = idx;
     break;
   }
