@@ -754,6 +754,21 @@ function completeThreeCornerLid(piece) {
 }
 
 function extractRectangles(points) {
+  // Only a record that is MOSTLY lids is a lid record. Elsewhere a run of 4
+  // points can form a tidy rectangle by coincidence — 2026-11-13, the first four
+  // points of an as-built conduit (a small U-shaped hook) did, and were drawn
+  // as a closed box, severing the conduit from its next leg.
+  let lidPoints = 0;
+  for (let i = 0; i + 3 < points.length; ) {
+    if (isRectangle(points, i)) {
+      lidPoints += 4;
+      i += 4;
+    } else {
+      i++;
+    }
+  }
+  if (lidPoints < points.length * 0.6) return [{ run: points }];
+
   const items = [];
   let run = [];
   let i = 0;
@@ -836,9 +851,14 @@ function continuesSmoothly(points, idx) {
   // one (seen on real as-built LV conduits, 2026-10-13).
   if (!before || !after) return true;
 
-  const cosLimit = Math.cos((20 * Math.PI) / 180);
-  const along = (d) => (d[0] * gx + d[1] * gy) / glen;
-  return along(before) >= cosLimit && along(after) >= cosLimit;
+  // One side must run dead on (the straight leg itself, 12°); the other may be
+  // the start of a bend leaving it — a bend with few vertices turns 20-30° on
+  // its first chord (2026-11-13: an as-built LV conduit's straight then a chord
+  // 26° off was cut, losing the 6.8m leg).
+  const angleOff = (d) => (Math.acos(Math.min(1, Math.max(-1, (d[0] * gx + d[1] * gy) / glen))) * 180) / Math.PI;
+  const a = angleOff(before);
+  const b = angleOff(after);
+  return Math.min(a, b) <= 12 && Math.max(a, b) <= 40;
 }
 
 // 2026-11-03: a gap right next to a LONG segment (>10m) is part of a long
